@@ -1,0 +1,12 @@
+*.ipynb
+__pycache__
+checkpoint
+data
+output*
+wandb
+test
+*.slurm
+c4_en
+results
+tmp*
+*.sh
