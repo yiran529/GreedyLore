@@ -1,10 +1,10 @@
 # Agent 工作说明
 
-本文件只保留执行任何任务前都需要知道的规则。开展新方法、正式实验、结果整理或论文工作前，必须继续阅读 [研究指南](docs/compressed_muon/RESEARCH_GUIDE.md)。
+本文件只保留执行任何任务前都需要知道的规则。开展新方法、正式实验或结果整理前，先阅读 [环境说明](readme.md)，再查看相关训练入口及现有运行脚本。
 
 ## 研究目标
 
-本项目研究 Muon 优化器的分布式通信优化，目标是参考团队前期的 [ARC-TopK](https://arxiv.org/abs/2510.26709) 和 [GreedyLore](https://arxiv.org/abs/2507.08784)，将 Adam/分布式梯度压缩中的 Top-K、低秩压缩、误差反馈和 All-Reduce 兼容设计迁移到 Muon，并形成可发表的研究成果。
+本仓库已有 GreedyLore、PowerSGD、稀疏化等分布式梯度压缩实现，并已接入 Muon 优化器。研究目标是在这些现有通信路径上探索 Muon 与低秩压缩、Top-K、误差反馈等方法的组合，明确语义与通信代价，并形成可比较的实验结果。
 
 Muon 的正交化是非线性操作，通常有：
 
@@ -17,7 +17,7 @@ Ortho(Average(G)) != Average(Ortho(G))
 ## 必须遵守
 
 - 保留用户已有修改，不覆盖或回退无关内容。
-- 保留当前 Muon 作为 baseline；新方法应尽量能够通过配置、独立函数或独立代码路径切换。
+- 保留现有 Muon、AdamW/SGD 和无压缩通信等适用基线；新方法应尽量能够通过配置、独立函数或独立代码路径切换。
 - 避免与研究目标无关的大范围重构，重要实现应便于解释和比较。
 - 未经允许，不修改虚拟环境，不升级 PyTorch、CUDA、NCCL、Triton 等关键依赖。
 - 不停止、修改或干扰未经授权的进程，绝不干扰其他用户的进程。
@@ -26,30 +26,32 @@ Ortho(Average(G)) != Average(Ortho(G))
 
 ## 主要代码位置
 
-- Muon 实现：`dion/muon.py`
-- 共享通信与正交化路径：`dion/megabatch_base.py`
-- 参考实现：`dion/muon_reference.py`
-- 异步运行与工具：`dion/opt_utils.py`
-- 训练入口：`train.py`
-- 配置、测试与性能测试：`configs/`、`tests/`、`benchmark/`
+- Muon 优化器及参数分组、命令行参数：`optimizer/muon.py`、`optimizer/muon_utils.py`
+- 通信 hook 注册、参数和状态：`comm_hooks/utils.py`
+- LoRe 低秩通信：`comm_hooks/lore_hook.py`；GreedyLore 相关的子空间压缩见 `comm_hooks/subspace_hook.py`。
+- TopK/RandK 稀疏通信：`comm_hooks/sparse_hook.py`；PowerSGD 见 `comm_hooks/powerSGD_hook.py`。
+- 无压缩 All-Reduce 基线：`comm_hooks/default_hooks.py`
+- GLUE 微调：`glue/run_glue_no_trainer_HF.py`
+- CIFAR-10 训练：`pytorch-cifar/main.py`；模型定义在 `pytorch-cifar/models/`。
+- C4/LLaMA 预训练：`c4/run_llama_pretraining.py`；模型配置在 `c4/configs/`，训练辅助代码在 `c4/pept_utils/`。
+- Muon 验证：`tests/test_muon.py`、`tests/test_muon_entrypoints.py`
 
 ## 文件放置
 
-Compressed Muon 研究内容统一放在以下位置：
+沿用本仓库现有布局：
 
-- 正式配置：`configs/compressed_muon/`
-- benchmark 和 profiler 脚本：`benchmark/compressed_muon/`
-- 研究文档：`docs/compressed_muon/`
-- 日志、trace、checkpoint 和原始结果：`artifacts/compressed_muon/<experiment-id>/`
-- 测试：沿用 `tests/test_*.py`
+- 优化器及参数分组放在 `optimizer/`，通信算法与辅助函数放在 `comm_hooks/`。
+- LLaMA 模型配置放在 `c4/configs/`；现有运行示例见 `c4/scripts/` 和仓库根目录的 `.slurm` 文件。根目录脚本包含旧集群路径，运行前应核对。CIFAR-10 的使用说明见 `pytorch-cifar/README.md`。
+- 新增测试沿用 `tests/test_*.py`；仓库目前没有独立的 `benchmark/` 目录。
+- 训练日志、checkpoint 和结果放在运行参数指定的输出目录，或仓库已有的 `output/` 中，并记录对应配置。`pytorch-cifar/main.py` 会将 checkpoint 写到当前工作目录的 `checkpoint/`，运行前注意工作目录。
 
-不要向仓库根目录散落实验脚本和产物。完整目录和文档职责见研究指南。
+现有参数和运行方式以对应训练入口及脚本为准。
 
 ## 修改与验证
 
 - 先做与改动规模相称的低成本检查，再考虑完整训练。
 - 涉及 collective 时，条件允许应进行多 GPU smoke test，并注意各 rank 的调用顺序和张量大小一致。
-- 保持原始 Muon 语义的修改，可与 baseline 做数值对比；有损压缩方法不要求逐元素一致，但应关注稳定性和训练表现。
+- 修改 Muon 或通信压缩时，保留 `none`、`lore`、`topk_sync`、`randk_sync` 等适用的对照路径；保持原始 Muon 语义的改动可与现有实现做数值对比。有损压缩方法不要求与无压缩结果逐元素一致，但应关注通信行为、稳定性和训练表现。
 - 原型阶段允许只覆盖主要路径；尚未覆盖的场景应在汇报或方法记录中说明。
 
 ## 方法与实验编号
@@ -59,26 +61,26 @@ Compressed Muon 研究内容统一放在以下位置：
 - 单元测试、短 smoke test 和临时调试不强制编号。
 - 本地实验目录、主要日志和 W&B run name 应使用同一实验编号。
 
-编号格式、登记方式和状态定义见研究指南。
+编号及其对应配置、结果在方法记录中保持一致。
 
 ## Worklog
 
-- 每次实际尝试一个方法，或在已有方法上完成一次实验后，都应在 `docs/worklog/` 中记录，包括失败或结论不明确的尝试。
+- 每次实际尝试一个方法，或在已有方法上完成一次实验后，都应在 `docs/worklog/` 中记录；该目录尚未建立，首次需要时创建。失败或结论不明确的尝试也应记录。
 - 同一方法的不同尝试和实验必须按时间追加到同一个 worklog 文件，不得为每次运行分别新建文件。
 - 文件名使用 `<方法编号>-<简短名称>.md`；每条记录简要说明日期、目的与假设、修改或实验配置、验证、结果与观察、结论和下一步。
-- 注明关联的代码、配置、实验编号和产物路径。大段日志和原始结果仍放在 `artifacts/`，worklog 只保留摘要和路径。
+- 注明关联的代码、配置、实验编号和产物路径。大段日志和原始结果放在实验输出目录，worklog 只保留摘要和路径。
 - 除非特别要求，用中文写
 
 ## GPU 与长任务
 
 - 启动 GPU 或分布式任务前检查 GPU 可用情况和已有进程。
-- 长时间任务应在 `tmux` 中运行并保留日志。
-- 正式训练默认启用 W&B，并保持 W&B 名称与本地实验编号可对应。
+- 长时间任务按运行环境使用 `tmux` 或作业调度系统，并保留日志。
+- 使用 W&B 记录正式训练时，保持 run name 与本地实验编号可对应；以训练入口的实际跟踪能力为准。
 - 注意磁盘空间，按需保存 checkpoint 和 profiler trace。
 
-## 何时读取研究指南
+## 何时阅读项目资料
 
-以下任务开始前，必须阅读 `docs/compressed_muon/RESEARCH_GUIDE.md`：
+以下任务开始前，必须阅读 `readme.md`、相关训练入口及现有运行脚本（`c4/scripts/` 或仓库根目录的 `.slurm` 文件）：
 
 - 提出或实现新的压缩、通信或 Muon 变体；
 - 创建正式配置、方法编号或实验编号；
@@ -86,7 +88,7 @@ Compressed Muon 研究内容统一放在以下位置：
 - 整理研究结果、图表或论文内容；
 - 新增或调整研究目录与长期文档。
 
-普通 bug 修复、代码阅读和小范围维护不要求重复读取研究指南。
+普通 bug 修复、代码阅读和小范围维护不要求重复阅读全部示例。
 
 ## 任务汇报
 
@@ -101,6 +103,6 @@ Compressed Muon 研究内容统一放在以下位置：
 ## 长任务与额度控制
 
 * 对训练、benchmark、profiler 等长任务，避免使用 Agent/LLM 循环等待或轮询状态。
-* 完成必要的启动检查后，优先将任务一次性放到 `tmux` 或后台运行并记录日志；不要反复执行 `tail`、`ps`、`nvidia-smi` 等命令等待结束。
+* 完成必要的启动检查后，按运行环境将任务放到 `tmux`、后台或作业调度系统中并记录日志；不要反复执行 `tail`、`ps`、`nvidia-smi` 等命令等待结束。
 * 只有当任务状态会影响当前决策时才主动检查；普通等待应交给进程、脚本或调度系统，而不是通过重复 Agent 回合实现。
 * 若任务之间存在依赖，优先由脚本串行编排，例如 `task_a && task_b`，而不是让 Agent 持续观察 `task_a`，结束后再手动启动 `task_b`。
