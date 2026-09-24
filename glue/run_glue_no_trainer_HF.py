@@ -48,6 +48,7 @@ from transformers.utils.versions import require_version
 import torch.distributed as dist
 from utils import get_default_param_groups, get_galore_param_groups, get_onebit_param_groups
 from comm_hooks.utils import register_comm_hook_for_ddp_model, get_run_name_glue
+from optimizer import add_muon_args, build_muon_optimizer
 
 # Will error if the minimal version of Transformers is not installed. Remove at your own risks.
 # check_min_version("4.44.0.dev0")
@@ -277,6 +278,7 @@ def parse_args():
     # Compressor arguments
     from comm_hooks.utils import add_comm_hook_args
     add_comm_hook_args(parser)
+    add_muon_args(parser)
 
     args = parser.parse_args()
 
@@ -295,7 +297,7 @@ def parse_args():
     if args.wandb_project is not None or args.wandb_job_type is not None:
         assert args.report_to == 'wandb', "Need to set report_to to wandb to use wandb specific arguments."
     
-    supported_optimizers = ['adamw', 'sgd', 'precond_adam', 'onebit_adam', 'onebit_adammini', 'galore']
+    supported_optimizers = ['adamw', 'sgd', 'precond_adam', 'onebit_adam', 'onebit_adammini', 'galore', 'muon']
     assert args.optimizer in supported_optimizers, "`optimizer` should be one of the following: " + ', '.join(supported_optimizers)
 
     return args
@@ -514,6 +516,18 @@ def main():
     if args.optimizer == 'adamw' :
         optimizer_grouped_parameters = get_default_param_groups(model, args.weight_decay)
         optimizer = torch.optim.AdamW(optimizer_grouped_parameters, lr=args.learning_rate, betas=(args.beta1,args.beta2), eps=args.eps, weight_decay=args.weight_decay)
+    elif args.optimizer == 'muon' :
+        optimizer = build_muon_optimizer(
+            model, lr=args.learning_rate, scalar_lr=args.muon_scalar_lr,
+            mu=args.muon_mu, weight_decay=args.weight_decay,
+            scalar_weight_decay=args.muon_scalar_weight_decay,
+            scalar_betas=(args.muon_scalar_beta1, args.muon_scalar_beta2),
+            scalar_epsilon=args.muon_scalar_eps,
+            muon_epsilon=args.muon_epsilon,
+            adjust_lr=None if args.muon_adjust_lr == "none" else args.muon_adjust_lr,
+            compile_orthogonalization=args.muon_compile,
+            distributed_orthogonalization=not args.muon_local_orthogonalization,
+        )
     elif args.optimizer == 'sgd' :
         optimizer_grouped_parameters = get_default_param_groups(model, args.weight_decay)
         optimizer = torch.optim.SGD(optimizer_grouped_parameters, lr=args.learning_rate, weight_decay=args.weight_decay)

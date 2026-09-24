@@ -10,17 +10,23 @@ import torchvision.transforms as transforms
 
 import os
 import argparse
+import sys
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from models import *
 from utils import progress_bar
+from optimizer import add_muon_args, build_muon_optimizer
 
 import wandb
 
 
 parser = argparse.ArgumentParser(description='PyTorch CIFAR10 Training')
 parser.add_argument('--lr', default=0.1, type=float, help='learning rate')
+parser.add_argument('--optimizer', default='sgd', choices=['sgd', 'muon'], help='optimizer')
 parser.add_argument('--resume', '-r', action='store_true',
                     help='resume from checkpoint')
+add_muon_args(parser)
 args = parser.parse_args()
 
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
@@ -88,8 +94,21 @@ if args.resume:
     start_epoch = checkpoint['epoch']
 
 criterion = nn.CrossEntropyLoss()
-optimizer = optim.SGD(net.parameters(), lr=args.lr,
-                      momentum=0.9, weight_decay=5e-4)
+if args.optimizer == 'sgd':
+    optimizer = optim.SGD(net.parameters(), lr=args.lr,
+                          momentum=0.9, weight_decay=5e-4)
+else:
+    optimizer = build_muon_optimizer(
+        net, lr=args.lr, scalar_lr=args.muon_scalar_lr,
+        mu=args.muon_mu, weight_decay=5e-4,
+        scalar_weight_decay=args.muon_scalar_weight_decay,
+        scalar_betas=(args.muon_scalar_beta1, args.muon_scalar_beta2),
+        scalar_epsilon=args.muon_scalar_eps,
+        muon_epsilon=args.muon_epsilon,
+        adjust_lr=None if args.muon_adjust_lr == "none" else args.muon_adjust_lr,
+        compile_orthogonalization=args.muon_compile,
+        distributed_orthogonalization=not args.muon_local_orthogonalization,
+    )
 # scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=train_epoch)
 # 用stepLR，0.5乘0.1， 0.75乘0.1
 scheduler = torch.optim.lr_scheduler.MultiStepLR(optimizer, milestones=[int(train_epoch*0.5), int(train_epoch*0.75)], gamma=0.1)

@@ -26,6 +26,7 @@ from c4.pept_utils.dataloader import PreprocessedIterableDataset
 from c4.pept_utils.modeling_llama import LlamaForCausalLM
 
 from comm_hooks.utils import add_comm_hook_args, get_run_name_c4, register_comm_hook_for_ddp_model
+from optimizer import add_muon_args, build_muon_optimizer
 
 transformers.logging.set_verbosity_error()
 
@@ -82,12 +83,13 @@ def parse_args(args):
     # Compressor arguments
     from comm_hooks.utils import add_comm_hook_args
     add_comm_hook_args(parser)
+    add_muon_args(parser, scalar_lr_default=0.001, scalar_weight_decay_default=0.0)
     
     args = parser.parse_args(args)
 
     args = args_utils.check_args_torchrun_main(args)
 
-    supported_optimizers = ['adamw','galore_adamw','golore_adamw']
+    supported_optimizers = ['adamw','galore_adamw','golore_adamw','muon']
     assert args.optimizer in supported_optimizers, "`optimizer` should be one of the following: " + ', '.join(supported_optimizers)
 
     return args
@@ -313,6 +315,18 @@ def main(args):
     
     if args.optimizer.lower() == "adamw":
         optimizer = torch.optim.AdamW(trainable_params, lr=args.lr, betas=(args.beta1,args.beta2), eps=args.eps, weight_decay=args.weight_decay)
+    elif args.optimizer.lower() == "muon":
+        optimizer = build_muon_optimizer(
+            model, lr=args.lr, scalar_lr=args.muon_scalar_lr,
+            mu=args.muon_mu, weight_decay=args.weight_decay,
+            scalar_weight_decay=args.muon_scalar_weight_decay,
+            scalar_betas=(args.muon_scalar_beta1, args.muon_scalar_beta2),
+            scalar_epsilon=args.muon_scalar_eps,
+            muon_epsilon=args.muon_epsilon,
+            adjust_lr=None if args.muon_adjust_lr == "none" else args.muon_adjust_lr,
+            compile_orthogonalization=args.muon_compile,
+            distributed_orthogonalization=not args.muon_local_orthogonalization,
+        )
     elif args.optimizer.lower() == "galore_adamw":
         from optimizer import GaLoreAdamW
         from glue.utils import get_galore_param_groups
