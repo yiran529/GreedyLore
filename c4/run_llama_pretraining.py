@@ -1,6 +1,7 @@
 import os
 import time
 import json
+import math
 import random
 import argparse
 import numpy as np
@@ -23,12 +24,32 @@ from loguru import logger
 
 from c4.pept_utils import training_utils, args_utils
 from c4.pept_utils.dataloader import PreprocessedIterableDataset
+from c4.pept_utils.c4_data import load_c4_split
 from c4.pept_utils.modeling_llama import LlamaForCausalLM
 
 from comm_hooks.utils import add_comm_hook_args, get_run_name_c4, register_comm_hook_for_ddp_model
 from optimizer import add_muon_args, build_muon_optimizer
 
 transformers.logging.set_verbosity_error()
+
+
+def set_model_pad_token_id(model, pad_token_id):
+    module = model.module if hasattr(model, "module") else model
+    module.config.pad_token_id = pad_token_id
+    if module.generation_config is not None:
+        module.generation_config.pad_token_id = pad_token_id
+
+
+def require_training_budget(update_step, target_steps):
+    if update_step < target_steps:
+        raise RuntimeError(
+            f"Training data exhausted after {update_step} of {target_steps} update steps"
+        )
+
+
+def wandb_run_url(run):
+    return run.url
+
 
 def parse_args(args):
     parser = argparse.ArgumentParser()
@@ -102,7 +123,7 @@ def evaluate_model(model, dataset_path, preprocess_batched, pad_idx, global_rank
     from requests.exceptions import ConnectionError
     for attempt in range(5):
         try:
-            val_data = datasets.load_dataset(dataset_path, split="validation", streaming=True) #DGX
+            val_data = load_c4_split(dataset_path, split="validation")
         except ConnectionError as e:
                     if attempt < 5 - 1:
                         print(f"Connection error: {e}. Retrying...")
@@ -125,34 +146,28 @@ def evaluate_model(model, dataset_path, preprocess_batched, pad_idx, global_rank
 
     target_eval_tokens = 10_000_000
     evaluated_on_tokens = 0
-    total_loss = torch.tensor(0.0).to(device)
-    total_batches = 1
+    loss_numerator = torch.tensor(0.0, dtype=torch.float64, device=device)
+    local_tokens = torch.tensor(0, dtype=torch.int64, device=device)
     logger.info(f"Eval set prepared in {time.time() - _time:.2f} seconds")
 
     for batch in val_data_mapped.batch(batch_size=batch_size):
-        if evaluated_on_tokens > target_eval_tokens:
+        if evaluated_on_tokens >= target_eval_tokens:
             break
-        total_batches += 1
 
         batch = {k: v.to(device) for k, v in batch.items()}
         labels = batch["input_ids"].clone()
         labels[labels == pad_idx] = -100
         loss = model(**batch, labels=labels).loss
-        total_loss += loss.detach()
+        valid_tokens = (labels[:, 1:] != -100).sum()
+        loss_numerator += loss.detach().double() * valid_tokens
+        local_tokens += valid_tokens
+        evaluated_on_tokens += valid_tokens.item() * world_size
 
-        evaluated_on_tokens += (batch["input_ids"] != pad_idx).sum().item() * world_size
-
-    total_loss = total_loss / total_batches
-    print(total_loss.item())
-    print("Total batch size: ", total_batches)
-    print("Evaluated on tokens: ", evaluated_on_tokens)
-    print("Labels: ", labels)
-    # Gather losses across all GPUs
-    gathered_losses = [torch.zeros_like(total_loss) for _ in range(world_size)]
-    dist.all_gather(gathered_losses, total_loss)
-    total_loss = sum([t.item() for t in gathered_losses]) / world_size
-
-    return total_loss, evaluated_on_tokens
+    dist.all_reduce(loss_numerator, op=dist.ReduceOp.SUM)
+    dist.all_reduce(local_tokens, op=dist.ReduceOp.SUM)
+    if local_tokens.item() == 0:
+        raise RuntimeError("C4 validation produced no target tokens")
+    return (loss_numerator / local_tokens).item(), local_tokens.item()
 
 def warmup_linear(x, warmup=0.002):
     if x < warmup:
@@ -203,7 +218,7 @@ def main(args):
     from requests.exceptions import ConnectionError
     for attempt in range(5):
         try:
-            data = datasets.load_dataset(args.dataset_path, split="train", streaming=True)
+            data = load_c4_split(args.dataset_path, split="train")
         except ConnectionError as e:
                     if attempt < 5 - 1:
                         print(f"Connection error: {e}. Retrying...")
@@ -365,9 +380,11 @@ def main(args):
 
     # global steps and others are defined above
     pad_idx = tokenizer.pad_token_id
-    model.module.generation_config.pad_token_id = tokenizer.pad_token_id #replace unvalid -1 from config file
+    set_model_pad_token_id(model, tokenizer.pad_token_id)
     update_time = time.time()
     local_step = 0  # when continue_from is used, local_step != global_step
+    best_eval_loss = float("inf")
+    best_eval_step = None
 
     # ##############################
     # TRAINING LOOP
@@ -378,13 +395,13 @@ def main(args):
 
     for batch_idx, batch in enumerate(dataloader):
 
-        global_step += 1
-        local_step += 1
-
-        if update_step > args.num_training_steps:
-            logger.info(f"Reached max number of update steps (f{args.num_training_steps}). Stopping training.")
+        if update_step >= args.num_training_steps:
+            logger.info(f"Reached max number of update steps ({args.num_training_steps}). Stopping training.")
             print(f"Rank {global_rank} stopping training.")
             break
+
+        global_step += 1
+        local_step += 1
 
         batch = {k: v.to(device) for k, v in batch.items()}
         labels = batch["input_ids"].clone()
@@ -460,13 +477,20 @@ def main(args):
         if update_step % args.eval_every == 0 or update_step == 1:
             logger.info(f"Eval Every Step: {args.eval_every}")
             logger.info(f"Performing evaluation at step {update_step}")
+            model.eval()
             total_loss, evaluated_on_tokens = evaluate_model(
                 model, args.dataset_path, preprocess_batched, pad_idx, global_rank, world_size, device, args.batch_size
             )
+            model.train()
+            if total_loss < best_eval_loss:
+                best_eval_loss = total_loss
+                best_eval_step = update_step
             if global_rank == 0:
                 wandb.log({
-                    "final_eval_loss": total_loss,
-                    "final_eval_tokens": evaluated_on_tokens,
+                    "eval_loss": total_loss,
+                    "eval_ppl": math.exp(total_loss),
+                    "eval_tokens": evaluated_on_tokens,
+                    "best_eval_ppl": math.exp(best_eval_loss),
                     },
                     step=global_step,
                 )
@@ -500,6 +524,7 @@ def main(args):
     # ##############################
     # END of training loop
     # ##############################
+    require_training_budget(update_step, args.num_training_steps)
     logger.info("Training finished")
     if global_rank == 0: pbar.close()
 
@@ -540,11 +565,16 @@ def main(args):
     total_loss, evaluated_on_tokens = evaluate_model(
         model, args.dataset_path, preprocess_batched, pad_idx, global_rank, world_size, device, args.batch_size
     )
+    if total_loss < best_eval_loss:
+        best_eval_loss = total_loss
+        best_eval_step = update_step
 
     if global_rank == 0:
         wandb.log({
             "final_eval_loss": total_loss,
+            "final_eval_ppl": math.exp(total_loss),
             "final_eval_tokens": evaluated_on_tokens,
+            "best_eval_ppl": math.exp(best_eval_loss),
             },
             step=global_step,
         )
@@ -553,8 +583,13 @@ def main(args):
         if args.output_dir is not None :
             all_results = {
                 "final_eval_loss": total_loss,
+                "final_eval_ppl": math.exp(total_loss),
                 "final_eval_tokens": evaluated_on_tokens,
-                "wandb_link": wandb.run.get_url()
+                "best_eval_loss": best_eval_loss,
+                "best_eval_ppl": math.exp(best_eval_loss),
+                "best_eval_step": best_eval_step,
+                "update_step": update_step,
+                "wandb_link": wandb_run_url(wandb.run)
             }
             with open(os.path.join(args.output_dir, "all_results.json"), "w") as f:
                 json.dump(all_results, f)

@@ -1,7 +1,5 @@
-import itertools
-
 import torch
-from torch.utils.data import IterableDataset, get_worker_info
+from torch.utils.data import IterableDataset
 
 
 class PreprocessedIterableDataset(IterableDataset):
@@ -13,18 +11,10 @@ class PreprocessedIterableDataset(IterableDataset):
         self.max_length = max_length
 
     def __iter__(self):
-        worker_info = get_worker_info()
-        if worker_info is None:
-            # If no worker_info is provided, we are not using DataLoader workers, so yield all data
-            iter_data = iter(self.data)
-        else:
-            # If using DataLoader workers, yield a subset of the data for this worker
-            worker_id = worker_info.id
-            num_workers = worker_info.num_workers
-            iter_data = itertools.islice(self.data, worker_id, None, num_workers)
-
         batch = []
-        for example in iter_data:
+        # Hugging Face's IterableDataset already assigns source shards to
+        # PyTorch DataLoader workers when iterated inside each worker.
+        for example in self.data:
             tokenized_example = self.tokenizer(
                 example["text"],
                 max_length=self.max_length,

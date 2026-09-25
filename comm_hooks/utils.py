@@ -177,6 +177,7 @@ def register_comm_hook_for_ddp_model(model, process_group, args, optimizer=None)
         hook_state = SubspaceState(
             process_group=process_group,
             matrix_approximation_rank=args.compress_rank,
+            min_compression_rate=args.min_compression_rate,
             update_proj_gap=args.update_proj_gap,
             use_error_feedback=args.use_error_feedback,
             start_compress_iter=args.start_compress_iter,
@@ -304,6 +305,10 @@ def add_comm_hook_args(parser):
         help="Set the rank of the low-rank approximation.",
     )
     parser.add_argument(
+        "--min_compression_rate", type=float, default=2.0,
+        help="Compress a tensor when dense size / transmitted size exceeds this value.",
+    )
+    parser.add_argument(
         "--update_proj_gap",
         type=int,
         default=200,
@@ -387,15 +392,17 @@ def get_run_name_glue(args, run_name=''):
         run_name += f"(topk{args.compress_ratio})"
     elif 'flex_quant' in args.compressor:
         run_name += f"({args.quantization_bits}bit)"
-    
+
     # time
     import datetime
     run_name += f"-{datetime.datetime.now().strftime('%Y%m%d%H%M%S')}"
     return run_name
 
 def get_run_name_c4(args, run_name=''):
+    if args.wandb_run_name:
+        return args.wandb_run_name
     if not run_name:
-        return run_name
+        run_name = ''
     run_name += f"c4_{args.model_config.split('/')[-1].split('.')[0]}"
     run_name += f"-dist{dist.get_world_size()}"
     run_name += f"-bs{args.batch_size}"
@@ -459,4 +466,4 @@ if __name__ == '__main__':
 
     
 
-    
+

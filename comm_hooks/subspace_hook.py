@@ -177,6 +177,37 @@ def maybe_batched_tensors_to_compress(stt, state):
             for tensor in tensors:
                 yield tensor.unsqueeze(0) 
 
+
+def estimate_subspace_scores(bases, gradients, generator, process_group):
+    """Estimate each shared basis direction's global gradient energy.
+
+    Each direction uses an independent Gaussian probe. The signed local
+    estimates are averaged before squaring, as in GreedyLore Algorithm 2.
+    """
+    local_scores = []
+    for basis, gradient in zip(bases, gradients):
+        rows, columns = gradient.shape[1:]
+        if rows < columns:
+            projected = torch.bmm(basis.transpose(1, 2).float(), gradient.float())
+            probes = torch.randn(projected.shape, device=gradient.device,
+                                 generator=generator)
+            local_scores.append((projected * probes).sum(dim=2))
+        else:
+            projected = torch.bmm(gradient.float(), basis.transpose(1, 2).float())
+            probes = torch.randn(projected.shape, device=gradient.device,
+                                 generator=generator)
+            local_scores.append((projected * probes).sum(dim=1))
+
+    if not local_scores:
+        return []
+    sizes = [score.numel() for score in local_scores]
+    scores = torch.cat([score.reshape(-1) for score in local_scores])
+    if process_group is not None and dist.get_world_size(process_group) > 1:
+        dist.all_reduce(scores, group=process_group)
+        scores.div_(dist.get_world_size(process_group))
+    return [score.square().view_as(original) for score, original in
+            zip(scores.split(sizes), local_scores)]
+
 def subspace_hook_ef14(
     state: SubspaceState, bucket: dist.GradBucket
 ) -> torch.futures.Future[torch.Tensor]:
@@ -307,11 +338,11 @@ def subspace_hook_ef14(
     # so the following process could share the same code.
     batched_tensors_to_compress = list(maybe_batched_tensors_to_compress(stt=shape_to_tensors, state=state))
     
-    def get_subspace_norm(ms, bttc):
-        pass
-        
     if not state.random:
-        scalers = get_subspace_norm(state.ms_dict[bucket_index], batched_tensors_to_compress)
+        scalers = estimate_subspace_scores(
+            state.ms_dict[bucket_index], batched_tensors_to_compress,
+            state.generator[bucket_index], group_to_use,
+        )
         
     # Create Rs that point to the allocated memory.
     rs, ps = [], []
@@ -547,11 +578,11 @@ def subspace_hook_noef(
     # so the following process could share the same code.
     batched_tensors_to_compress = list(maybe_batched_tensors_to_compress(stt=shape_to_tensors, state=state))
     
-    def get_subspace_norm(ms, bttc):
-        pass
-        
     if not state.random:
-        scalers = get_subspace_norm(state.ms_dict[bucket_index], batched_tensors_to_compress)
+        scalers = estimate_subspace_scores(
+            state.ms_dict[bucket_index], batched_tensors_to_compress,
+            state.generator[bucket_index], group_to_use,
+        )
         
     # Create Rs that point to the allocated memory.
     rs, ps = [], []
