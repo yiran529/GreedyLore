@@ -17,3 +17,20 @@
 ## 2026-09-25：数据量纠正
 
 - 前次 C4 提前耗尽的根因是训练包装器重复执行 worker 切分，现已修复；现有 30 个分片足够四组各自的 8,393 步预算。AdamW 继续排在三组 Muon 后运行。
+
+## 2026-09-25：130M Dense AdamW 串行排队
+
+- 实验编号：`CM008-m003-dense-adamw-llama130m-c4-adam_dense-lr2p5e3-bf16-s1243`。同 CM005–CM007 的 130M hidden 768、C4、seed、BF16、全局 batch 512、GA=1、20,000 步、warmup 2,000、cosine 到 10%、无 checkpoint、W&B online。
+- Dense AdamW：LR 0.0025、betas (0.9, 0.999)、eps 1e-8、weight decay 0，梯度裁剪 1.0。该 LR 是用户此前从论文候选集合中选定的单次运行值；不能断言它是论文 130M 表项 24.73 使用的值。
+- 在 `greedylore_tableiv_130m_bf16` 中排在三组 Muon 后，前序失败则不启动。
+
+## 2026-09-26：130M CM008 原队列未启动后的补跑
+
+- CM007 已完成 20,000 步且脚本成功结束，但原串行 tmux 会话在 CM008 创建输出目录前消失；中断原因未确认，CM008 此前没有训练记录。
+- 用户确认 GPU 3–6 当前未使用并要求直接开始。经一次 GPU 占用检查，四张卡显存均约 3 MiB；09:06 由 `greedylore_tableiv_130m_followups` 会话使用原 `c4/scripts/run_table_iv_130m.bash adam_dense` 配置启动 CM008。已确认 torchrun 进程与 `outputs/CM008-m003-dense-adamw-llama130m-c4-adam_dense-lr2p5e3-bf16-s1243/train.log` 创建；最终结果尚未产生。
+- 本次仍使用 W&B online 项目 `GreedyLore-TableIV`、20,000 步、BF16、GA=1、无 checkpoint。状态见 `outputs/CM033-CM034-greedylore-130m-followups/status.tsv`；CM008 完整结束后同一会话才尝试 CM033/CM034。
+
+## 2026-09-29：完成结果核对
+
+- CM004 Dense AdamW 完成修订后的 8,393 步，final C4 validation loss/PPL 为 3.50195 / 33.1799；CM008 补跑完成 20,000 步，为 3.16086 / 23.5908。来源是各自的 `outputs/<完整 run ID>/all_results.json`；日志均有 `Script finished successfully`，CM008 队列状态另记 exit code 0。
+- 与同规模 Dense Muon 比较时必须保留优化器差异；本次 AdamW LR 0.0025 是单次选择，不能称为论文最佳 LR。全表和数据来源见 `docs/results.md`。

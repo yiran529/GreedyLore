@@ -42,13 +42,14 @@ from transformers import (
     default_data_collator,
     get_scheduler,
 )
-from transformers.utils import check_min_version, send_example_telemetry
+from transformers.utils import check_min_version
 from transformers.utils.versions import require_version
 
 import torch.distributed as dist
 from utils import get_default_param_groups, get_galore_param_groups, get_onebit_param_groups
 from comm_hooks.utils import register_comm_hook_for_ddp_model, get_run_name_glue
 from optimizer import add_muon_args, build_muon_optimizer
+from glue.local_glue import load_local_glue
 
 # Will error if the minimal version of Transformers is not installed. Remove at your own risks.
 # check_min_version("4.44.0.dev0")
@@ -105,6 +106,8 @@ def parse_args():
     parser.add_argument(
         "--train_file", type=str, default=None, help="A csv or a json file containing the training data."
     )
+    parser.add_argument("--local_glue_cache_root", type=str, default=None,
+                        help="Read prepared GLUE Arrow splits from this local cache root.")
     parser.add_argument(
         "--validation_file", type=str, default=None, help="A csv or a json file containing the validation data."
     )
@@ -294,7 +297,7 @@ def parse_args():
             assert extension in ["csv", "json"], "`validation_file` should be a csv or a json file."
 
     # Custom Sanity Checks
-    if args.wandb_project is not None or args.wandb_job_type is not None:
+    if args.wandb_project is not None or args.wandb_job_type is not None or args.wandb_run_name is not None:
         assert args.report_to == 'wandb', "Need to set report_to to wandb to use wandb specific arguments."
     
     supported_optimizers = ['adamw', 'sgd', 'precond_adam', 'onebit_adam', 'onebit_adammini', 'galore', 'muon']
@@ -304,20 +307,20 @@ def parse_args():
 
 def main():
     args = parse_args()
-    # Sending telemetry. Tracking the example usage helps us better allocate resources to maintain them. The
-    # information sent is the one passed as arguments along with your Python/PyTorch versions.
-    send_example_telemetry("run_glue_no_trainer", args)
-
     # Initialize the accelerator. We will let the accelerator handle device placement for us in this example.
     # If we're using tracking, we also need to initialize it here and it will by default pick up all supported trackers
     # in the environment
     if args.dtype != "fp16":
         accelerator = (
-            Accelerator(log_with=args.report_to, project_dir=args.output_dir) if args.with_tracking else Accelerator()
+            Accelerator(log_with=args.report_to, project_dir=args.output_dir,
+                        step_scheduler_with_optimizer=False)
+            if args.with_tracking else Accelerator(step_scheduler_with_optimizer=False)
         )
     else:
         accelerator = (
-            Accelerator(mixed_precision="fp16" ,log_with=args.report_to, project_dir=args.output_dir) if args.with_tracking else Accelerator(mixed_precision="fp16")
+            Accelerator(mixed_precision="fp16", log_with=args.report_to,
+                        project_dir=args.output_dir, step_scheduler_with_optimizer=False)
+            if args.with_tracking else Accelerator(mixed_precision="fp16", step_scheduler_with_optimizer=False)
         )
 
     # Make one log on every process with the configuration for debugging.
@@ -358,7 +361,8 @@ def main():
     # download the dataset.
     if args.task_name is not None:
         # Downloading and loading a dataset from the hub.
-        raw_datasets = load_dataset("nyu-mll/glue", args.task_name)
+        raw_datasets = (load_local_glue(args.local_glue_cache_root, args.task_name)
+                        if args.local_glue_cache_root else load_dataset("nyu-mll/glue", args.task_name))
     else:
         # Loading the dataset from local csv or json file.
         data_files = {}
@@ -559,23 +563,10 @@ def main():
     else:
         raise ValueError(f"Optimizer {args.optimizer} not supported.")
     
-    # Scheduler and math around the number of training steps.
-    overrode_max_train_steps = False
-    num_update_steps_per_epoch = math.ceil(len(train_dataloader) / args.gradient_accumulation_steps)
-    if args.max_train_steps is None:
-        args.max_train_steps = args.num_train_epochs * num_update_steps_per_epoch
-        overrode_max_train_steps = True
-
-    lr_scheduler = get_scheduler(
-        name=args.lr_scheduler_type,
-        optimizer=optimizer,
-        num_warmup_steps=int(args.warmup_fraction * args.max_train_steps),
-        num_training_steps=args.max_train_steps,
-    )
-
-    # Prepare everything with our `accelerator`.
-    model, optimizer, train_dataloader, eval_dataloader, lr_scheduler = accelerator.prepare(
-        model, optimizer, train_dataloader, eval_dataloader, lr_scheduler
+    # Prepare data before calculating the per-rank update budget.
+    overrode_max_train_steps = args.max_train_steps is None
+    model, optimizer, train_dataloader, eval_dataloader = accelerator.prepare(
+        model, optimizer, train_dataloader, eval_dataloader
     )
 
     logger.info(str(model))
@@ -583,12 +574,18 @@ def main():
 
 
 
-    # We need to recalculate our total training steps as the size of the training dataloader may have changed
+    # Accelerate shards the train loader across ranks; schedule each optimizer update once.
     num_update_steps_per_epoch = math.ceil(len(train_dataloader) / args.gradient_accumulation_steps)
     if overrode_max_train_steps:
         args.max_train_steps = args.num_train_epochs * num_update_steps_per_epoch
-    # Afterwards we recalculate our number of training epochs
     args.num_train_epochs = math.ceil(args.max_train_steps / num_update_steps_per_epoch)
+    lr_scheduler = get_scheduler(
+        name=args.lr_scheduler_type,
+        optimizer=optimizer,
+        num_warmup_steps=int(args.warmup_fraction * args.max_train_steps),
+        num_training_steps=args.max_train_steps,
+    )
+    lr_scheduler = accelerator.prepare(lr_scheduler)
 
     # Compressor
     process_group = dist.distributed_c10d._get_default_group()
@@ -607,8 +604,8 @@ def main():
         experiment_config["lr_scheduler_type"] = experiment_config["lr_scheduler_type"].value
 
         if args.report_to == 'wandb' :
-            wandb_run_name = get_run_name_glue(args)
-            accelerator.init_trackers(args.wandb_project, experiment_config, init_kwargs={"wandb":{"name":wandb_run_name}})
+            wandb_run_name = args.wandb_run_name or get_run_name_glue(args)
+            accelerator.init_trackers(args.wandb_project, experiment_config, init_kwargs={"wandb":{"name":wandb_run_name, "job_type":args.wandb_job_type}})
         else :
             accelerator.init_trackers("glue_no_trainer", experiment_config)
 
@@ -789,6 +786,7 @@ def main():
         eval_metric = metric.compute()
         logger.info(f"mnli-mm: {eval_metric}")
     
+    wandb_link = accelerator.trackers[0].run.url if args.with_tracking and args.report_to == 'wandb' and accelerator.is_main_process else None
     if args.with_tracking:
         accelerator.end_training()
     
@@ -796,7 +794,7 @@ def main():
         all_results = {f"eval_{k}": v for k, v in eval_metric.items()}
         for k, v in best_metric.items():
             all_results[f"best_{k}"] = v
-        all_results["wandb_link"] = accelerator.trackers[0].run.get_url() if args.with_tracking and args.report_to == 'wandb' else None
+        all_results["wandb_link"] = wandb_link
         with open(os.path.join(args.output_dir, "all_results.json"), "w") as f:
             json.dump(all_results, f)
 

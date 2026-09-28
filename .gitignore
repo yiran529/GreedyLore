@@ -10,3 +10,4 @@ c4_en
 results
 tmp*
 *.sh
+output/
