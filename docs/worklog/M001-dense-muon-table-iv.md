@@ -74,3 +74,18 @@
 - 以各 run 的 `outputs/<完整 run ID>/all_results.json` 和 `train.log` 核对：CM001 `-rerun1` 完成修订后的 8,393 步，final C4 validation loss/PPL 为 3.61430 / 37.1255；CM005 完成 20,000 步，为 3.29619 / 27.0095。两组日志均有 `Script finished successfully`。早期只到 5,220 步的 CM001 仍是失败记录，不并入正式结果。
 - GLUE Dense Muon 的 CM009、CM012、CM015、CM018、CM021、CM024、CM027、CM030 均以 `-rerun1` 完成第 10 个 epoch，并产生机器可读结果。最终 validation 指标和对应源字段已整理在 `docs/results.md`；MNLI matched 的最终指标来自 epoch 9 日志，JSON `eval_accuracy` 对应 mismatched。
 - 上述结果均只有 seed 1243，属于初步结果；C4 60M 的 8,393 步与论文附录的 10,000 步不同，GLUE 是 validation 而非论文 test。
+
+## 2026-10-01：130M Muon 矩阵 LR 两组比较
+
+- 按用户要求，使用 `c4/scripts/queue_table_iv_130m_muon_lr.py` 串行运行 `CM040-m001-dense-muon-llama130m-c4-dense-lr0p01-bf16-s1243` 与 `CM041-m001-dense-muon-llama130m-c4-dense-lr0p005-bf16-s1243`，矩阵 LR 分别为 0.01、0.005；scalar LR 均为 0.001。
+- 其余沿用 `c4/scripts/run_table_iv_130m.bash dense`：LLaMA 130M、C4、4 GPU、20,000 步、BF16、global batch 512、warmup 2,000、cosine、Muon momentum 0.95、spectral-norm scaling、seed 1243、W&B online、无 checkpoint。数据路径固定为 `c4/c4_en`，与随后 GreedyLoRE 两组一致。
+- 以两组完成 20,000 步的 `all_results.json` 中 `final_eval_loss` 严格选较低者；相等时选择较小 LR。选中 LR 再用于 M002 的 r32/r256。队列状态与日志在 `outputs/CM040-CM043-muon-matrix-lr/`，训练结果在各自 `outputs/<run ID>/`。
+- 用户授权首组在已确认空闲的 GPU 0–3 直接启动；后续各组需等待任意同一组 4 张 GPU 连续两次空闲（间隔 5 分钟，显存 ≤1,500 MiB、利用率 ≤10%）。
+- 已启动 tmux 会话 `greedylore_130m_muon_matrix_lr`；`status.tsv` 确认 CM040 用 GPU 0–3、matrix LR 0.01 启动。训练日志显示完成首次更新并进入第 1 步 validation；其余三组等待自动串行执行。两个 LR 选择单元测试及脚本静态检查通过。
+
+## 2026-10-02：130M Dense 学习率选择完成结果核对
+
+- 目的：核对 CM040/CM041，并为同数据、同预算的 r32/r256 比较确定矩阵 LR。配置与运行入口沿用上一条记录；实际均使用 GPU 0–3 的 4 张 RTX 4090。
+- 结果：`CM040-m001-dense-muon-llama130m-c4-dense-lr0p01-bf16-s1243` 完成 20,000 步，final validation loss/PPL 为 3.13209 / 22.9218；`CM041-m001-dense-muon-llama130m-c4-dense-lr0p005-bf16-s1243` 同预算为 3.14294 / 23.1718。CM040 的 loss 低 0.01085，队列因此选择矩阵 LR 0.01。
+- 验证：逐项核对 `outputs/<上述完整 run ID>/all_results.json` 的 `update_step`、`final_eval_loss`、`final_eval_ppl`，日志的最终 loss 与成功结束标记，以及 `outputs/CM040-CM043-muon-matrix-lr/status.tsv` 的 completed/selection 记录。本地运行配置确认数据为 `c4/c4_en`。
+- 结论与下一步：两候选中 0.01 的最终验证指标较低；每组仅 seed 1243 一次，且使用 validation 选 LR，不能称为稳健最优。与旧数据路径的 CM005 不作单因素 LR 比较。压缩组结果及限制见 `docs/results.md`，后续固定配置做多 seed 确认。

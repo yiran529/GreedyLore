@@ -66,3 +66,28 @@
 - C4 60M 的 CM002 r32、CM003 r128 均完成修订后的 8,393 步，final validation PPL 分别为 40.5794、37.4963；同预算 Dense Muon CM001 `-rerun1` 为 37.1255。C4 130M 的 CM006 r32、CM007 r256、CM033 r64、CM034 r32 且延后到第 2,000 步压缩，均完成 20,000 步，final PPL 分别为 36.4617、28.8555、33.5800、34.3349；同预算 Dense Muon CM005 为 27.0095。数值来自各 run 的 `all_results.json`，日志均有成功结束标记。
 - 后续队列状态文件记录 CM008、CM033、CM034 均以 exit code 0 结束；各自的 `all_results.json` 又确认达到 20,000 步。CM033/CM034 是观察 CM006 后设计的单因素探索，不能把同一 validation 上的改善视作独立验证。
 - GLUE rank 8 的 CM010/013/016/019/022/025/028/031 与 rank 16 的 CM011/014/017/020/023/026/029/032 均以 `-rerun1` 完成第 10 个 epoch。最终 validation 指标及源字段见 `docs/results.md`；原无 W&B 的 CM010 中断尝试继续排除在正式比较之外。所有结果只有一个 seed。
+
+## 2026-09-30：130M r64 Muon LR 宽范围筛选
+
+- 目的：在固定 GreedyLoRE r64、EF14 和通信设置时，分别筛选 Muon 矩阵 LR 与 scalar AdamW LR；门槛取既有 CM033 在第 5,000 步的 validation loss `3.743565253792393`，候选必须严格更低才继续到 20,000 步。CM033 与本轮使用的 C4 路径不同，这一门槛仅用于探索性筛选。
+- 实验编号：CM036 (0.004/0.001)，CM037 (0.1/0.001)，CM038 (0.02/0.0002)，CM039 (0.02/0.005)；括号内为矩阵 LR/scalar LR。每项从头训练，seed 1243。
+- 其余参数沿用 `c4/scripts/run_table_iv_130m.bash r64`：LLaMA 130M、C4、4 GPU、BF16、序列长 256、全局 batch 512、20,000 步 cosine 调度、warmup 2,000、rank 64、EF14、压缩起点 1,000、投影间隔 200、无 checkpoint、W&B online。数据路径固定为 `c4/c4_en`，GPU 4–7。
+- 队列 `c4/scripts/sweep_table_iv_130m_lr.py` 读取每个 run 的 `train.log` 中 `Eval loss at step 5000`；候选 loss 等于或高于 CM033 时终止该候选进程组，低于则在原 20,000 步 LR 调度下继续同一次运行。状态记录于 `outputs/CM036-CM039-r64-lr-sweep/status.tsv`。不修改训练入口或优化器。
+- 启动前核对：50 个训练分片和 8 个验证分片可由本地加载器读取；候选 dry-run 均保持 r64、EF14、20,000 步 cosine、warmup 2,000 等既有参数；相关单元测试、脚本语法与 `git diff --check` 通过。结果和运行状态以输出目录中的日志、`all_results.json` 和队列状态为准。
+- 已启动 tmux 会话 `greedylore_130m_r64_lr_sweep`；队列状态记录旧 CM033 为 `reference`，当前 GPU 4–7 被其他任务占用，队列在等待连续空闲检查后启动 CM036。尚无本轮候选结果。
+- 按用户后续要求，将正式队列的资源门槛改为：检查全部 GPU，每 5 分钟取样一次，连续两次取样中同样至少 4 张卡均满足显存 ≤1,500 MiB、利用率 ≤10% 才启动，实际选用的 4 张卡写入状态文件。等待控制器已在无候选训练时重启；CM036–CM039 配置和第 5,000 步 loss gate 不变。10 项相关单元测试通过；启动检查确认新控制器仍在等待，当前全部 GPU 被占用。
+
+## 2026-10-01：终止 r64 LR sweep，改为 Dense 选 LR 后比较 r32/r256
+
+- 用户观察降低 matrix LR 后的趋势，要求终止原 r64 sweep。CM036 在约第 12,000 步停止，未完成 20,000 步；CM037–CM039 未启动。CM036 的第 5,000 步与第 12,000 步 validation loss 分别为 3.48792、3.23633，仅为中断运行的观察值；保留原日志/W&B，不作为最终结果。状态见 `outputs/CM036-CM039-r64-lr-sweep/status.tsv`。
+- 新实验 `CM042` r32 和 `CM043` r256 在 M001 的 CM040/CM041 完成后，使用最终 validation loss 更低的矩阵 LR。其余沿用 `c4/scripts/run_table_iv_130m.bash`、scalar LR 0.001、EF14、压缩从第 1,000 次通信迭代开始、投影间隔 200、20,000 步、C4 `c4/c4_en`、seed 1243、W&B online、无 checkpoint。完整 run ID 将含选定 LR。
+- 串行队列脚本 `c4/scripts/queue_table_iv_130m_muon_lr.py`；每组启动前等待连续两次 5 分钟间隔的任意同一组 4 张 GPU 空闲。首组 Dense Muon 按用户单独授权直接用 GPU 0–3。队列状态在 `outputs/CM040-CM043-muon-matrix-lr/status.tsv`。
+
+## 2026-10-02：r64 中断状态及 r32/r256 完成结果核对
+
+- 目的与配置：记录最近学习率探索结果。CM036 沿用 r64 sweep 配置；CM042/CM043 使用 Dense 两候选选出的矩阵 LR 0.01、scalar LR 0.001，其他配置沿用上一条记录。实际 GPU 均为 0–3 的 4 张 RTX 4090。
+- 中断尝试：CM036 的日志 `Eval loss at step 5000` / `12000` 分别为 3.48792 / 3.23633；虽通过旧 CM033 的 5,000 步筛选门槛，但用户改换实验后终止。没有最终结果文件或成功结束标记；CM037–CM039 取消且未启动。状态见 `outputs/CM036-CM039-r64-lr-sweep/status.tsv`，指标见 `outputs/CM036-m002-greedylore-muon-llama130m-c4-r64-lr0p004-slr0p001-bf16-s1243/train.log`。这两项是中间 validation loss，不作为 final。
+- 完成结果：`CM042-m002-greedylore-muon-llama130m-c4-r32-lr0p01-bf16-s1243`、`CM043-m002-greedylore-muon-llama130m-c4-r256-lr0p01-bf16-s1243` 均完成 20,000 步；final validation loss/PPL 分别为 3.20127 / 24.5636、3.13895 / 23.0797。
+- 验证：核对 `outputs/<上述完整 run ID>/all_results.json` 的 `update_step`、`final_eval_loss`、`final_eval_ppl`，日志的最终 loss 和成功结束标记，以及 `outputs/CM040-CM043-muon-matrix-lr/status.tsv` 的 completed/queue finished。运行配置确认同为 `c4/c4_en`、rank 32/256、EF14 与所选 LR。
+- 结论：同设置 Dense CM040 的 PPL 为 22.9218；r32 高 1.6418（7.16%），r256 高 0.1579（0.69%）。r256 在本轮更接近 Dense。该比较只有 seed 1243 一次，并在同一 validation 上选择学习率，属于初步探索；不能将跨数据路径的旧 CM006/CM007 差异单独归因于 LR，也未核算总通信收益。
+- 下一步：固定所选配置，用预先规定的多 seed 确认；完整比较摘要见 `docs/results.md`。
