@@ -21,10 +21,12 @@ method=m001-dense
 experiment=CM005
 optimizer_name=muon
 lr_tag=""
+matrix_lr="${MUON_MATRIX_LR:-0.02}"
+scalar_lr="${MUON_SCALAR_LR:-0.001}"
 optimizer_args=(
-    --optimizer muon --lr 0.02 --weight_decay 0.0
+    --optimizer muon --lr "$matrix_lr" --weight_decay 0.0
     --muon_mu 0.95 --muon_epsilon 1e-8
-    --muon_scalar_lr 0.001 --muon_scalar_beta1 0.9
+    --muon_scalar_lr "$scalar_lr" --muon_scalar_beta1 0.9
     --muon_scalar_beta2 0.999 --muon_scalar_eps 1e-8
     --muon_scalar_weight_decay 0.0 --muon_adjust_lr spectral_norm
 )
@@ -61,7 +63,7 @@ elif [[ "$arm" == adam_dense ]]; then
 fi
 
 seed="${SEED:-1243}"
-run_id="${experiment}-${method}-${optimizer_name}-llama130m-c4-${arm}${lr_tag}-bf16-s${seed}"
+run_id="${RUN_ID:-${experiment}-${method}-${optimizer_name}-llama130m-c4-${arm}${lr_tag}-bf16-s${seed}}"
 output_dir="outputs/${run_id}"
 dataset_path="${C4_DATASET_PATH:-/dev/shm/wyr_tmp/c4}"
 export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-3,4,5,6}"
@@ -94,7 +96,6 @@ command=(
     --wandb_run_name "$run_id"
     --output_dir "$output_dir"
 )
-
 if [[ "$dry_run" == --dry-run ]]; then
     printf 'CUDA_VISIBLE_DEVICES=%q WANDB_MODE=%q ' "$CUDA_VISIBLE_DEVICES" "$WANDB_MODE"
     printf '%q ' "${command[@]}"
