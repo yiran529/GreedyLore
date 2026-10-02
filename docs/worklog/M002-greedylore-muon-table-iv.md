@@ -138,3 +138,4 @@
 - 用户授权比较9组系统设置，每组完整运行60M/130M/350M/1B的Dense/GreedyLoRE配对；GreedyLoRE臂为CM062–CM133中的奇数编号。完整配置、计时窗口和失败处理见 `docs/table-v-muon-setting-matrix.md`。
 - GreedyLoRE保持现有`top_subspace`实现、rank32、EF14、压缩起点100、投影间隔200、min compression rate 1；不优化或修改hook。1024 MB DDP bucket仅通过独立timing入口的DDP构造参数设置。
 - 预热101步包含首次投影，测量更新102–501的连续400步并包含两次周期投影。配置覆盖4/8 GPU、BF16/FP32、batch1/32/论文大batch、默认/单channel及Socket上界诊断；OOM保留并继续。
+- 8卡60M FP32/batch1/单channel/1024 MB bucket短smoke中，临时将压缩起点设为0会在第二步报basis与gradient批维不一致；原因是首次投影发生在DDP首轮bucket重建之前。保持hook不变，将诊断压缩起点改为1后，第1步Dense、第2步投影、第3步压缩均完成。正式矩阵的压缩起点100会先稳定bucket，因此不采用或外推失败smoke的时序。
