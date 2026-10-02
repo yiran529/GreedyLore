@@ -51,6 +51,43 @@ CM040–CM043 均完成 20,000 更新步，模型配置为 `c4/configs/llama_130
 - 每组只有 seed 1243 一次运行（n=1），学习率选择与比较使用同一 validation，属于探索性结果；下一步需固定配置，用预先约定的多 seed 重复确认。
 - 先前 r64 sweep 的 CM036（矩阵 LR 0.004 / scalar LR 0.001）第 5,000 步 validation loss 为 3.48792，低于筛选门槛 CM033 的 3.74357，继续运行后在第 12,000 步评估完被用户终止；该步 loss 为 3.23633。两项来源均为 `outputs/CM036-m002-greedylore-muon-llama130m-c4-r64-lr0p004-slr0p001-bf16-s1243/train.log` 的 `Eval loss at step <step>`，不是 final。该目录没有 `all_results.json` 或成功结束标记；状态文件 `outputs/CM036-CM039-r64-lr-sweep/status.tsv` 记为 `interrupted`。CM037–CM039 记为取消且未启动。CM033 与 CM036 的数据路径不同，筛选门槛只作探索参考。
 
+## CIFAR / ResNet-18：Figure 3 协议下的 Muon 比较
+
+### 实验矩阵
+
+| 实验 | 数据集 | 模型 / 方法 | 完成预算 |
+| --- | --- | --- | --- |
+| CM044 | CIFAR-10 | ResNet-18 / Dense Muon | 40 epochs / 15,640 更新步 |
+| CM045 | CIFAR-10 | ResNet-18 / GreedyLoRE + Muon r64 | 40 epochs / 15,640 更新步 |
+| CM046 | CIFAR-100 | ResNet-18 / Dense Muon | 40 epochs / 15,640 更新步 |
+| CM047 | CIFAR-100 | ResNet-18 / GreedyLoRE + Muon r64 | 40 epochs / 15,640 更新步 |
+
+### 核心设置
+
+每个数据集使用官方 50,000 张 train / 10,000 张 test。共同设置：4 张 RTX 4090、每卡 batch 32、全局 batch 128、seed 1243、FP32 模型和梯度、cosine 按 epoch 更新至 0，无学习率 warmup，不保存 checkpoint；Muon 的 Polar Express 正交化内部使用 BF16。CIFAR-10 使用 GPU 0–3，CIFAR-100 使用 GPU 4–7，各自先 Dense 后 GreedyLoRE。
+
+Muon 矩阵 LR **0.02**、momentum 0.95、Nesterov、spectral-norm scaling；scalar / 分类头 AdamW LR 在 CIFAR-10/100 上分别为 **0.005 / 0.0005**，betas=(0.9,0.999)、epsilon=1e-8。Weight decay 为 5e-4，bias 和 BatchNorm 参数为 0。两种数据集沿用原 CIFAR 入口的随机裁剪、水平翻转和 normalization，两方法臂保持一致。
+
+压缩组使用 `top_subspace`、rank 64、EF14、`min_compression_rate=2`、`beta_ef=0`、`error_inherit=0`；CIFAR-10/100 分别在前 500/4000 次 dense 更新后启用，子空间更新间隔分别为 750/1200。首次子空间刷新仍为 dense 聚合，第一次低秩传输是第 502/4002 次更新。卷积梯度展平后压缩，分类头与一维参数保持 dense；压缩发生在 Muon 动量和正交化之前，因此属于近似 Muon。
+
+训练预算、batch、rank、压缩起点和子空间间隔参照 GreedyLoRE Figure 3 / 附录 F；Muon 参数、精度、seed、数据处理及未明确的调度细节是本次适配，结果不是论文 AdamW 数值的直接复现。运行入口为 `pytorch-cifar/train_ddp.py`，配置脚本为 `pytorch-cifar/run_paper_muon.bash`，队列为 `pytorch-cifar/queue_paper_muon.bash`。W&B online 按数据集使用独立 project。
+
+### 结果
+
+| 实验 | final test accuracy (%) | final test loss |
+| --- | ---: | ---: |
+| CM044 | 94.43 | 0.31748 |
+| CM045 | 94.29 | 0.31015 |
+| CM046 | 75.91 | 1.27233 |
+| CM047 | 74.94 | 1.27259 |
+
+表中指标均为第 **40 epoch / 15,640 步**、完整 **10,000 张 test** 的最终值，不是 best。来源为各 run 的 `all_results.json` 字段 `final_test_accuracy`、`final_test_loss`，与 `metrics.jsonl` 最后一行交叉核对；同时核对 `status=completed`、`epoch`、`update_step`、`test_samples` 和日志 `TRAINING_COMPLETED`。完整 run ID 在 `outputs/` 下按实验编号及方法唯一定位，设置来自各 run 的 `config.json`；两个队列状态均为 `queue_finished`。
+
+### 结论
+
+- CIFAR-10 的 GreedyLoRE 最终 accuracy 比 Dense 低 **0.14 个百分点**，test loss 低 0.00733；CIFAR-100 的 accuracy 低 **0.97 个百分点**，test loss 高 0.00026。
+- 本轮 CIFAR-10 的压缩组更接近 Dense，CIFAR-100 的准确率损失更明显。每组只有 seed 1243 一次运行（n=1），未进行 CIFAR 学习率搜索，不能据此声称统计等效或稳定差异。
+
 ## GLUE / RoBERTa-base：Table III 相关实验
 
 本地 GLUE Arrow 数据、RoBERTa-base、4 GPU（0、1、2、7）、FP32、每卡 batch 4、10 epoch、seed 1243、cosine 调度和 10% warmup；入口为 `glue/scripts/run_table_iii_muon.bash`。Dense 与 r8/r16 使用相同 Muon 参数：矩阵 LR `2e-4`、scalar LR `5e-5`、momentum 0.95、spectral-norm scaling。r8/r16 使用 `top_subspace`、EF14、第 1,000 次通信迭代开始压缩、投影间隔 200。下表只用完成第 10 个 epoch 的 W&B online `-rerun1`；原 CM009 无 W&B 运行和中断的原 CM010 不参与比较。

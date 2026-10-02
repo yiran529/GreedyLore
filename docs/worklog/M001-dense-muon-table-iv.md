@@ -89,3 +89,32 @@
 - 结果：`CM040-m001-dense-muon-llama130m-c4-dense-lr0p01-bf16-s1243` 完成 20,000 步，final validation loss/PPL 为 3.13209 / 22.9218；`CM041-m001-dense-muon-llama130m-c4-dense-lr0p005-bf16-s1243` 同预算为 3.14294 / 23.1718。CM040 的 loss 低 0.01085，队列因此选择矩阵 LR 0.01。
 - 验证：逐项核对 `outputs/<上述完整 run ID>/all_results.json` 的 `update_step`、`final_eval_loss`、`final_eval_ppl`，日志的最终 loss 与成功结束标记，以及 `outputs/CM040-CM043-muon-matrix-lr/status.tsv` 的 completed/selection 记录。本地运行配置确认数据为 `c4/c4_en`。
 - 结论与下一步：两候选中 0.01 的最终验证指标较低；每组仅 seed 1243 一次，且使用 validation 选 LR，不能称为稳健最优。与旧数据路径的 CM005 不作单因素 LR 比较。压缩组结果及限制见 `docs/results.md`，后续固定配置做多 seed 确认。
+
+
+## 2026-10-02：CIFAR Figure 3 协议下的 Muon 比较
+
+- 研究约定：探索性扩展实验，问题是相同 Muon 配置下 GreedyLoRE 的最终 test accuracy 与 Dense 相差多少、梯度通信减少多少；不是原论文 AdamW 的数值复现。主指标为第 40 epoch 的 test accuracy 和压缩组减 Dense 的百分点差，best 仅作辅助，不据此选择学习率。单 seed 1243，无调参；没有预先指定“相当”的容差，不将单次结果解释为统计等效。
+- 用户已确认启动，并指定 matrix LR **0.02**、W&B **online**、CIFAR-10/100 分别用不同 project，**不保存 checkpoint**。其余沿用已确认方案。
+- 论文协议：ResNet-18、CIFAR-10/100 官方 50,000 train / 10,000 test、40 epochs、4 张 RTX 4090、每卡 batch 32、全局 batch 128、cosine。GreedyLoRE rank 64，前 500/4000 次更新 dense，子空间间隔 750/1200。参照 https://arxiv.org/pdf/2507.08784 正文 VII-A、Figure 3 和附录 F。
+- 实际适配：矩阵 Muon LR 0.02、momentum 0.95、Nesterov、5 步 Polar Express、spectral_norm scaling；scalar/head AdamW LR 分别 0.005/0.0005，betas (0.9,0.999)、eps 1e-8；weight decay 5e-4，bias/BatchNorm 为 0。FP32 训练，Muon 正交化内部 BF16。cosine 按 epoch 更新至 0，无 LR warmup。上述 Muon/精度/seed 设置不是论文值。
+- 参照仓库最初提交 `92c5edb` 的 `pytorch-cifar/main.py`：沿用 CIFAR 版 ResNet、RandomCrop(32,padding=4)、水平翻转、normalization mean=(.4914,.4822,.4465)、std=(.2023,.1994,.2010)、test batch 100、weight decay 5e-4。原入口是 200 epochs + MultiStepLR，按用户批准的论文协议改用 40 epochs + cosine。CIFAR-100 沿用同一 normalization，记录为已批准的实现选择。
+- 数据路径 `/home/wyr/ARC-TopK-release/data`：复用已存在且校验过的 CIFAR-10，CIFAR-100 从 torchvision 官方数据 URL 下载并校验为 50,000/10,000。每 epoch 391 updates、最后一批每卡 20，全程 15,640 updates；评估分片不补重复样本，完整 10,000 张。
+- 新入口 `pytorch-cifar/train_ddp.py` 保留原 `main.py`，使用真实 DDP 和现有 Muon/GreedyLoRE 实现；复现脚本 `run_paper_muon.bash`、自动串行队列 `queue_paper_muon.bash`。不修改虚拟环境或关键依赖。启动时保存完整命令、git HEAD、关键代码 SHA256、config.json 和 tracker.json；没有 checkpoint，失败只能另建身份从头跑。
+- 验证：15 项 CIFAR/hook/Muon 单元测试通过；4 卡 Dense 3-step 与 GreedyLoRE 6-step synthetic smoke 完成，后者 start=2/gap=2 覆盖首次 SVD、低秩传输、再次刷新，并检查各 rank 参数一致。smoke 仅测试实现，指标不作科学结果；产物 `outputs/cifar-smoke-dense/`、`outputs/cifar-smoke-greedylore/`。4 个正式命令 dry-run、bash 语法和 diff whitespace 检查通过。
+- 资源编排：两个数据集同时占用不同的 4 卡，各自先 Dense 后 GreedyLoRE；前一组必须成功完成 40 epochs、15,640 updates、10,000 test 样本，才能启动后一组。队列失败即停止。共享主机的并行数据集任务可能影响时间测量；耗时视作诊断而非隔离 benchmark。
+- 输出：每 run 的 `outputs/<run ID>/train.log`、`config.json`、`metrics.jsonl`、`all_results.json`、`tracker.json`；队列状态在 `outputs/CM044-CM047-cifar/status-cifar10.tsv` / `status-cifar100.tsv`。主结果尚未产生。
+
+- 本方法臂：`CM044-m001-dense-muon-resnet18-cifar10-r64-lr0p02-fp32-s1243` (GPU 0–3 / project `GreedyLore-CIFAR10-Muon`)，`CM046-m001-dense-muon-resnet18-cifar100-r64-lr0p02-fp32-s1243` (GPU 4–7 / project `GreedyLore-CIFAR100-Muon`)。`compressor=none`；run ID 中 r64 是配对协议标识，不代表 Dense 在压缩。
+
+- 启动核对：tmux `greedylore_cifar10_muon` / `greedylore_cifar100_muon` 已启动，显式隔离 GPU 0–3 / 4–7；CM044/CM046 的 config.json 确认 matrix LR 0.02、scalar LR 0.005/0.0005、global batch 128、391 steps/epoch、40 epochs、online、无 checkpoint，日志均已完成首个更新。
+- W&B 映射：CM044 run `9gq5lr0g`，https://wandb.ai/yiran0834-huazhong-university-of-science-and-technology/GreedyLore-CIFAR10-Muon/runs/9gq5lr0g ；CM046 run `runsb22r`，https://wandb.ai/yiran0834-huazhong-university-of-science-and-technology/GreedyLore-CIFAR100-Muon/runs/runsb22r 。训练进行中，没有最终结果。
+
+- 额外验证：3 项既有训练入口 CLI 检查通过（运行时需要 `PYTHONPATH=.`，首次未设置而 C4 import 失败；未修改 C4）。共 18 项相关单元/入口检查通过。独立代码审查未发现训练/评估阻塞；按反馈明确记录 FP32 模型/梯度与 BF16 正交化，显式指定两组 GPU，保护既有队列状态不被覆盖并补充队列脚本 SHA256。
+- 运行维护：普通长任务等待交给 tmux 和 shell 队列，停止 Agent 轮询。完成时每 run 自动写 final/best test 指标、通信口径、all_results.json 与 TRAINING_COMPLETED；失败保留日志并停下对应队列。以后整理结果须先核对完整预算和成功结束标记。
+
+
+## 2026-10-02：CIFAR Dense 完成结果核对
+
+- CM044 / CIFAR-10 与 CM046 / CIFAR-100 均完成 40 epochs、15,640 updates，完整评估 10,000 张 test；final test accuracy / loss 分别为 94.43% / 0.31747798724099996 和 75.91% / 1.2723289066553116。参数沿用上一条：matrix LR 0.02，scalar LR 0.005/0.0005，4 GPU、global batch 128、seed 1243、W&B online、无 checkpoint。
+- 来源：上述完整 run ID 对应 `outputs/<run ID>/all_results.json` 的 `final_test_accuracy`、`final_test_loss`；已核对 `status=completed`、`epoch=40`、`update_step=15640`、`test_samples=10000`，与 `metrics.jsonl` 最后一行及日志 `TRAINING_COMPLETED` 一致。两个队列状态均为 `queue_finished`，W&B 日志确认同步完成。
+- 配对压缩组 CM045/CM047 的最终准确率分别低 0.14/0.97 个百分点。每组 n=1，属于初步观察；汇总见 `docs/results.md` 的 CIFAR 节，后续如需稳健结论应固定配置做多 seed 重复。
