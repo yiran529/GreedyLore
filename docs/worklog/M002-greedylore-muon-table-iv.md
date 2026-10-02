@@ -121,3 +121,14 @@
 - CM045 / CIFAR-10 与 CM047 / CIFAR-100 均完成 40 epochs、15,640 updates，完整评估 10,000 张 test；final test accuracy / loss 分别为 94.29% / 0.31014942813664675 和 74.94% / 1.272592346072197。采用已批准的 matrix LR 0.02、rank 64、EF14，以及各自的压缩预热和子空间刷新间隔；与 Dense 保持同数据、seed、Muon 和训练预算。
 - 来源：上述完整 run ID 对应 `outputs/<run ID>/all_results.json` 的 `final_test_accuracy`、`final_test_loss`；已核对 `status=completed`、`epoch=40`、`update_step=15640`、`test_samples=10000`，与 `metrics.jsonl` 最后一行及日志 `TRAINING_COMPLETED` 一致。两个队列状态均为 `queue_finished`，W&B 日志确认同步完成。
 - 相对配对 Dense CM044/CM046，最终准确率低 0.14/0.97 个百分点；test loss 分别低约 0.00733 / 高约 0.00026。CIFAR-10 更接近 Dense，但每组只有 seed 1243 一次，不能声称统计等效。摘要见 `docs/results.md` 的 CIFAR 节；后续如需确认应做固定配置的多 seed 实验。
+
+## 2026-10-02：Table V GreedyLore + Muon 测速队列
+
+- 用户授权整张Table V改用Muon测速；M002计划臂为CM050 / CM053 / CM056 / CM059，对应60M / 130M / 350M / 1B。配置、论文来源、架构冲突及本地选择见 `docs/table-v-muon-protocol.md`；不能称作完全一致的论文架构复现。
+- 统一rank32、`top_subspace`、EF14、从hook iter1000开始压缩、投影间隔200、min_compression_rate1、beta_ef0、error_inherit0。窗口更新1001–1500包含1001/1201/1401的投影刷新与首次初始化，不删慢步。压缩Muon正交化前的梯度，是近似Muon；embedding/head沿用hook排除规则。
+- 其他设置与同模型Dense臂完全相同，包括Mu​​on分组、LR0.01/0.001、4GPU、真实C4、batch128（1B为64）、GA1、BF16、checkpointing、sequence256、seed1243。端到端时间包含Muon内部collective，不把hook通信量当总通信量。
+- 验证：四卡130M batch128短smoke完成，NCCL确认SHM；相关19项单元测试通过。正式臂尚未产生完成结果，已排入 `greedylore_table_v_muon` 串行队列，产物位于 `outputs/CM048-CM059-table-v-muon/`。每臂实际开始/结束以status.tsv为准。
+
+## 2026-10-02：暂停 Table V Muon 队列
+
+- 用户要求暂停当前队列并改测 350M AdamW Dense/GreedyLore。350M GreedyLore Muon 的 CM056 已完成并保留；1B GreedyLore Muon CM059 未启动。

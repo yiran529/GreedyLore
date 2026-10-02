@@ -118,3 +118,16 @@
 - CM044 / CIFAR-10 与 CM046 / CIFAR-100 均完成 40 epochs、15,640 updates，完整评估 10,000 张 test；final test accuracy / loss 分别为 94.43% / 0.31747798724099996 和 75.91% / 1.2723289066553116。参数沿用上一条：matrix LR 0.02，scalar LR 0.005/0.0005，4 GPU、global batch 128、seed 1243、W&B online、无 checkpoint。
 - 来源：上述完整 run ID 对应 `outputs/<run ID>/all_results.json` 的 `final_test_accuracy`、`final_test_loss`；已核对 `status=completed`、`epoch=40`、`update_step=15640`、`test_samples=10000`，与 `metrics.jsonl` 最后一行及日志 `TRAINING_COMPLETED` 一致。两个队列状态均为 `queue_finished`，W&B 日志确认同步完成。
 - 配对压缩组 CM045/CM047 的最终准确率分别低 0.14/0.97 个百分点。每组 n=1，属于初步观察；汇总见 `docs/results.md` 的 CIFAR 节，后续如需稳健结论应固定配置做多 seed 重复。
+
+## 2026-10-02：Table V Muon 测速矩阵启动
+
+- 用户要求按论文 Table V 尽可能一致地测速，并将 Adam 替换为 Muon。实验约定及所有未证实设置、架构偏差见 `docs/table-v-muon-protocol.md`。
+- M001 Dense 臂为 CM048 / CM051 / CM054 / CM057，对应 60M / 130M / 350M / 1B；与 M002、M004 同模型三臂使用相同 Muon 设置、C4、seed、batch 和计时窗口。
+- 实际配置：4 × RTX 4090（GPU 0–3）、NCCL SHM、BF16、sequence256、每卡 batch128（1B 为64）、GA1、checkpointing、matrix/scalar LR0.01/0.001、momentum0.95、spectral norm、WD0、clip1、先预热1000步，再测1001–1500的连续500步。Muon 内部 collective 计入；不做验证、不保存 checkpoint、不使用 tracker。
+
+## 2026-10-02：暂停 Table V Muon 队列
+
+- 按用户要求暂停 CM048–CM059 队列，准备改测 350M AdamW。CM048–CM056 已完成并保留；CM057 Dense Muon 1B 在运行中被终止，只有 `config.json`，不得作为完成结果。CM058–CM059 未启动。
+- tmux 会话停止后发现 CM057 的 `torchrun` 成为孤儿进程，已只终止该已确认进程树并核对 GPU 释放。
+- 新增 `c4/table_v_timing.py`、`c4/scripts/run_table_v_muon.py`、`tests/test_table_v_timing.py`。验证：19项相关单元测试通过，编译和diff检查通过；130M真实C4、batch128的四卡三路径smoke均完成3步测量；NCCL日志确认SHM。smoke不是正式结果。
+- `greedylore_table_v_muon` tmux 已启动12臂串行队列；主目录 `outputs/CM048-CM059-table-v-muon/`，启动日志 `outputs/table-v-smoke/controller-launch.log`。当前无正式500步测速结果，后续状态由 `status.tsv` / `summary.json` 保存；最终自动生成 `summary.csv` / `results.md`。每臂失败会保留exit code与日志，不自动降低论文batch。

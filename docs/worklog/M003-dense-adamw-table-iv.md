@@ -34,3 +34,10 @@
 
 - CM004 Dense AdamW 完成修订后的 8,393 步，final C4 validation loss/PPL 为 3.50195 / 33.1799；CM008 补跑完成 20,000 步，为 3.16086 / 23.5908。来源是各自的 `outputs/<完整 run ID>/all_results.json`；日志均有 `Script finished successfully`，CM008 队列状态另记 exit code 0。
 - 与同规模 Dense Muon 比较时必须保留优化器差异；本次 AdamW LR 0.0025 是单次选择，不能称为论文最佳 LR。全表和数据来源见 `docs/results.md`。
+
+## 2026-10-02：350M Table V Dense AdamW 测速
+
+- 新实验 CM060 使用仓库 `llama_350m.json`、C4、4×RTX 4090、BF16、sequence 256、每卡 batch 128、GA1、activation checkpointing、seed 1243；AdamW LR 0.001、betas (0.9,0.999)、eps 1e-8、weight decay 0、clip 1。LR 沿用仓库原 `c4/scripts/run_llama_pretraining_Adam.sh` 的 350M 值。
+- 预热100次真实更新，测量更新101–600的连续500步，采用最慢rank连续墙钟时间/500。与CM061共用训练和计时配置，仅 compressor 不同；无评估、checkpoint或tracker。
+- 入口只扩展新增的 `c4/table_v_timing.py` AdamW分支，不修改原训练入口、模型或通信hook。单元测试、dry-run、py_compile和四卡batch128短smoke通过；smoke只有2个测量步，不作速度结论。
+- 正式串行队列已在tmux会话 `greedylore_table_v_adam350` 启动，CM060先运行，成功后自动运行CM061；状态与产物在 `outputs/CM060-CM061-table-v-adam-350m/`。
