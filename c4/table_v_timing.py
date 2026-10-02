@@ -53,6 +53,17 @@ def build_timing_optimizer(model, args):
     )
 
 
+def build_ddp_kwargs(args, local_rank):
+    kwargs = {
+        'device_ids': [local_rank],
+        'output_device': local_rank,
+        'broadcast_buffers': False,
+    }
+    if args.ddp_bucket_cap_mb is not None:
+        kwargs['bucket_cap_mb'] = args.ddp_bucket_cap_mb
+    return kwargs
+
+
 def parse_args():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--model_config', required=True)
@@ -66,6 +77,7 @@ def parse_args():
     parser.add_argument('--scheduler_steps', type=int, required=True)
     parser.add_argument('--lr_warmup_steps', type=int, required=True)
     parser.add_argument('--activation_checkpointing', action='store_true')
+    parser.add_argument('--ddp_bucket_cap_mb', type=int)
     parser.add_argument('--workers', type=int, default=4)
     parser.add_argument('--seed', type=int, default=1243)
     parser.add_argument('--lr', type=float, default=0.01)
@@ -84,6 +96,8 @@ def parse_args():
     args = parser.parse_args()
     if args.measured_iterations <= 0 or args.warmup_iterations < 0:
         parser.error('Invalid timing budget')
+    if args.ddp_bucket_cap_mb is not None and args.ddp_bucket_cap_mb <= 0:
+        parser.error('--ddp_bucket_cap_mb must be positive')
     if args.compressor not in ['none', 'powersgd', 'top_subspace']:
         parser.error('Use none, powersgd, or top_subspace')
     if args.compressor != 'none' and args.start_compress_iter > args.warmup_iterations:
@@ -124,7 +138,13 @@ def main():
                       measurement=f'max_rank(continuous_{args.measured_iterations}_iteration_wall_time)/{args.measured_iterations}; includes data fetch, H2D, forward/backward, DDP hook, clipping, optimizer, scheduler and zero_grad',
                       torch_version=torch.__version__, gpu=torch.cuda.get_device_name(),
                       git_head=subprocess.check_output(['git', 'rev-parse', 'HEAD'], text=True).strip(),
-                      nccl_environment={key: os.environ.get(key) for key in ['NCCL_P2P_DISABLE', 'NCCL_SHM_DISABLE', 'NCCL_DEBUG', 'NCCL_CUMEM_HOST_ENABLE']})
+                      nccl_environment={key: os.environ.get(key) for key in [
+                          'NCCL_P2P_DISABLE', 'NCCL_SHM_DISABLE', 'NCCL_DEBUG',
+                          'NCCL_CUMEM_HOST_ENABLE', 'NCCL_MAX_CTAS', 'NCCL_MIN_CTAS',
+                          'NCCL_MAX_NCHANNELS', 'NCCL_MIN_NCHANNELS', 'NCCL_NET',
+                          'NCCL_SOCKET_IFNAME', 'NCCL_SOCKET_NTHREADS',
+                          'NCCL_NSOCKS_PERTHREAD',
+                      ]})
         paths = [Path(__file__), Path(args.model_config), Path('optimizer/muon.py'), Path('optimizer/muon_utils.py'), Path('comm_hooks/utils.py'), Path('comm_hooks/subspace_hook.py'), Path('comm_hooks/powerSGD_hook.py'), Path('c4/pept_utils/modeling_llama.py'), Path('c4/pept_utils/dataloader.py'), Path('c4/pept_utils/c4_data.py')]
         config['code_sha256'] = {str(p): hashlib.sha256(p.read_bytes()).hexdigest() for p in paths}
         (output / 'config.json').write_text(json.dumps(config, indent=2) + '\n')
@@ -149,7 +169,9 @@ def main():
     scheduler = get_scheculer(optimizer=optimizer, scheduler_type='cosine',
                               num_training_steps=args.scheduler_steps,
                               warmup_steps=args.lr_warmup_steps, min_lr_ratio=0.1)
-    model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[local_rank], output_device=local_rank, broadcast_buffers=False)
+    model = torch.nn.parallel.DistributedDataParallel(
+        model, **build_ddp_kwargs(args, local_rank)
+    )
     register_comm_hook_for_ddp_model(model, dist.group.WORLD, args)
     parameters = [p for p in model.parameters() if p.requires_grad]
     if rank == 0:

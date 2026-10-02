@@ -1,8 +1,11 @@
 import unittest
+import importlib.util
+from pathlib import Path
 from types import SimpleNamespace
 
 import torch
 
+import c4.table_v_timing as timing
 from c4.table_v_timing import build_timing_optimizer, summarize_timing
 from c4.scripts.run_table_v_adam_350m import cells
 
@@ -18,6 +21,47 @@ class TimingSummaryTests(unittest.TestCase):
         for elapsed, steps in [([1.], [[1.]]), ([float('nan')], [[1., 1.]]), ([1.], [[1., float('inf')]])]:
             with self.assertRaises(ValueError):
                 summarize_timing(elapsed, steps, 2)
+
+    def test_ddp_bucket_cap_is_forwarded_when_requested(self):
+        args = SimpleNamespace(ddp_bucket_cap_mb=1024)
+        self.assertTrue(hasattr(timing, 'build_ddp_kwargs'))
+
+        self.assertEqual(
+            timing.build_ddp_kwargs(args, local_rank=3),
+            {
+                'device_ids': [3],
+                'output_device': 3,
+                'broadcast_buffers': False,
+                'bucket_cap_mb': 1024,
+            },
+        )
+
+
+class MuonSettingMatrixTests(unittest.TestCase):
+    def test_matrix_has_nine_groups_four_models_and_two_arms(self):
+        script = Path('c4/scripts/run_table_v_muon_setting_matrix.py')
+        self.assertTrue(script.is_file(), f'missing controller: {script}')
+        spec = importlib.util.spec_from_file_location('setting_matrix', script)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+
+        matrix = list(module.cells())
+
+        self.assertEqual(len(matrix), 72)
+        self.assertEqual(len({cell['group'] for cell in matrix}), 9)
+        self.assertEqual({cell['model'] for cell in matrix}, {'60m', '130m', '350m', '1b'})
+        self.assertEqual({cell['arm'] for cell in matrix}, {'dense', 'greedylore'})
+        self.assertTrue(all(cell['bucket_cap_mb'] == 1024 for cell in matrix))
+        self.assertTrue(all(cell['measured_iterations'] == 400 for cell in matrix))
+        self.assertEqual(matrix[0]['number'], 62)
+        self.assertEqual(matrix[-1]['number'], 133)
+        socket_cells = [cell for cell in matrix if cell['transport'] == 'socket']
+        batch_32_cells = [cell for cell in matrix if cell['batch_size'] == 32]
+        self.assertEqual(len(socket_cells), 8)
+        self.assertEqual(len(batch_32_cells), 8)
+        self.assertTrue(all(cell['world_size'] == 8 for cell in socket_cells))
+        self.assertTrue(all(cell['channels'] == 'one' for cell in socket_cells))
+        self.assertEqual({cell['model'] for cell in batch_32_cells}, {'60m', '130m', '350m', '1b'})
 
 
 class AdamTimingTests(unittest.TestCase):

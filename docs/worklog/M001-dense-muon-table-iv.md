@@ -131,3 +131,9 @@
 - tmux 会话停止后发现 CM057 的 `torchrun` 成为孤儿进程，已只终止该已确认进程树并核对 GPU 释放。
 - 新增 `c4/table_v_timing.py`、`c4/scripts/run_table_v_muon.py`、`tests/test_table_v_timing.py`。验证：19项相关单元测试通过，编译和diff检查通过；130M真实C4、batch128的四卡三路径smoke均完成3步测量；NCCL日志确认SHM。smoke不是正式结果。
 - `greedylore_table_v_muon` tmux 已启动12臂串行队列；主目录 `outputs/CM048-CM059-table-v-muon/`，启动日志 `outputs/table-v-smoke/controller-launch.log`。当前无正式500步测速结果，后续状态由 `status.tsv` / `summary.json` 保存；最终自动生成 `summary.csv` / `results.md`。每臂失败会保留exit code与日志，不自动降低论文batch。
+
+## 2026-10-03：GreedyLoRE timing setting matrix
+
+- 用户授权比较9组系统设置，每组完整运行60M/130M/350M/1B的Dense与GreedyLoRE；Dense臂为CM062–CM133中的偶数编号。完整协议见 `docs/table-v-muon-setting-matrix.md`。
+- 全部组使用Muon、C4、sequence256、rank32配对协议和1024 MB DDP bucket。设置覆盖4/8 GPU、BF16/FP32、每卡batch 1/32/论文大batch、默认/单NCCL channel、SHM/Socket；除论文大batch参照外关闭activation checkpointing。
+- 计时预热101步并连续测量400步；OOM或超时记为失败并继续，不自动改变配置。入口只为独立timing路径增加DDP bucket参数，不修改原训练入口或GreedyLoRE hook。
