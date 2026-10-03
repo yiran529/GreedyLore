@@ -16,6 +16,8 @@ ARTIFACTS = ROOT / 'outputs/CM134-CM165-table-v-muon-strict-blocking'
 START_NUMBER = 134
 BF16_PAPER_ARTIFACTS = ROOT / 'outputs/CM166-CM173-table-v-muon-strict-blocking-bf16-paper'
 BF16_PAPER_START_NUMBER = 166
+SYSTEM_MATRIX_ARTIFACTS = ROOT / 'outputs/CM174-CM187-table-v-muon-strict-blocking-system-matrix'
+SYSTEM_MATRIX_START_NUMBER = 174
 WARMUP_ITERATIONS = 101
 MEASURED_ITERATIONS = 400
 BUCKET_CAP_MB = 8192
@@ -34,6 +36,18 @@ GROUPS = (
 )
 BF16_PAPER_GROUPS = (
     ('paper-batch-ws4-bf16', 4, 'bfloat16', 'paper', True, 'default', 'shm'),
+)
+SYSTEM_MATRIX_GROUPS = (
+    ('ws4-fp32-default', 4, 'float32', 1, False, 'default', 'shm'),
+    ('ws4-fp32-ch1', 4, 'float32', 1, False, 'one', 'shm'),
+    ('ws8-fp32-default', 8, 'float32', 1, False, 'default', 'shm'),
+    ('ws8-fp32-ch1', 8, 'float32', 1, False, 'one', 'shm'),
+    ('ws8-bf16-default', 8, 'bfloat16', 1, False, 'default', 'shm'),
+    ('ws8-bf16-ch1', 8, 'bfloat16', 1, False, 'one', 'shm'),
+    ('ws8-bf16-socket', 8, 'bfloat16', 1, False, 'one', 'socket'),
+)
+SYSTEM_MATRIX_MODELS = (
+    ('350m', 'llama_350m.json', 60000, 6000, 128),
 )
 ARMS = (
     ('dense', 'none', 'm001'),
@@ -59,15 +73,20 @@ def timestamp():
     return datetime.now().astimezone().isoformat()
 
 
-def cells(groups=None, start_number=None, artifacts=None):
+def cells(
+    groups=None, start_number=None, artifacts=None, models=None,
+    alternate_arms=False,
+):
     groups = GROUPS if groups is None else groups
     number = START_NUMBER if start_number is None else start_number
     artifacts = ARTIFACTS if artifacts is None else artifacts
-    for group in groups:
+    models = MODELS if models is None else models
+    for group_index, group in enumerate(groups):
         group_name, world_size, dtype, group_batch, checkpointing, channels, transport = group
-        for model, config, schedule_steps, lr_warmup_steps, paper_batch in MODELS:
+        for model, config, schedule_steps, lr_warmup_steps, paper_batch in models:
             batch_size = paper_batch if group_batch == 'paper' else group_batch
-            for arm, compressor, method in ARMS:
+            arms = tuple(reversed(ARMS)) if alternate_arms and group_index % 2 else ARMS
+            for arm, compressor, method in arms:
                 run_id = (
                     f'CM{number:03d}-{method}-{arm}-muon-llama{model}-c4-'
                     f'{group_name}-s1243'
@@ -165,6 +184,16 @@ def bf16_paper_cells():
         groups=BF16_PAPER_GROUPS,
         start_number=BF16_PAPER_START_NUMBER,
         artifacts=BF16_PAPER_ARTIFACTS,
+    )
+
+
+def system_matrix_cells():
+    return cells(
+        groups=SYSTEM_MATRIX_GROUPS,
+        start_number=SYSTEM_MATRIX_START_NUMBER,
+        artifacts=SYSTEM_MATRIX_ARTIFACTS,
+        models=SYSTEM_MATRIX_MODELS,
+        alternate_arms=True,
     )
 
 
@@ -279,16 +308,23 @@ def write_comparisons(rows):
 
 
 def main():
-    global ARTIFACTS, START_NUMBER, GROUPS
+    global ARTIFACTS, START_NUMBER, GROUPS, MODELS
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--dry-run', action='store_true')
     parser.add_argument('--gpus', default='0,1,2,3,4,5,6,7')
-    parser.add_argument('--matrix', choices=['fp32', 'bf16-paper'], default='fp32')
+    parser.add_argument(
+        '--matrix', choices=['fp32', 'bf16-paper', 'system'], default='fp32'
+    )
     args = parser.parse_args()
     if args.matrix == 'bf16-paper':
         ARTIFACTS = BF16_PAPER_ARTIFACTS
         START_NUMBER = BF16_PAPER_START_NUMBER
         GROUPS = BF16_PAPER_GROUPS
+    elif args.matrix == 'system':
+        ARTIFACTS = SYSTEM_MATRIX_ARTIFACTS
+        START_NUMBER = SYSTEM_MATRIX_START_NUMBER
+        GROUPS = SYSTEM_MATRIX_GROUPS
+        MODELS = SYSTEM_MATRIX_MODELS
     all_gpus = args.gpus.split(',')
     if (
         len(all_gpus) != 8 or len(set(all_gpus)) != 8
@@ -296,7 +332,7 @@ def main():
     ):
         parser.error('--gpus must contain eight distinct GPU indices')
 
-    matrix = list(cells())
+    matrix = list(cells(alternate_arms=args.matrix == 'system'))
     if args.dry_run:
         print(
             f'cells={len(matrix)} ids=CM{matrix[0]["number"]:03d}-'

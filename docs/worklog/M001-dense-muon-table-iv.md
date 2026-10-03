@@ -148,3 +148,9 @@
 
 - 按用户要求增加 CM166/168/170/172 Dense Muon：4 卡、BF16、activation checkpointing、论文每卡 batch（前三个模型128，1B为64），其他严格阻塞与压缩对照设置不变；每臂一次。
 - 追加组不打断或重跑 CM134–CM165，在首批结束后自动启动；输出位于 `outputs/CM166-CM173-table-v-muon-strict-blocking-bf16-paper/`。
+
+### 350M 系统变量精简矩阵
+
+- 用户停止 BF16 论文追加组：Dense CM166、CM168 完成；CM170 在运行中终止，CM172 未启动。遗留 CM170 rank 已只按已确认 PID 终止并释放 GPU。
+- 新增 CM174–CM187 中的 Dense 臂，固定350M、batch1、无checkpointing；比较4/8卡、FP32/BF16、默认/单channel及8卡BF16 Socket。按用户要求排除4卡与8卡的FP32 Socket配置。
+- 每个系统配置的 Dense/GreedyLoRE 各一次，并在相邻配置交替执行顺序。完整矩阵与口径见 `docs/table-v-muon-strict-blocking.md`。

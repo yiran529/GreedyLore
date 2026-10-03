@@ -102,6 +102,43 @@ class StrictBlockingMatrixTests(unittest.TestCase):
             [128, 128, 128, 128, 128, 128, 64, 64],
         )
 
+    def test_system_matrix_omits_fp32_socket_groups_three_and_six(self):
+        script = Path('c4/scripts/run_table_v_muon_strict_blocking.py')
+        spec = importlib.util.spec_from_file_location('strict_blocking_system', script)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+
+        matrix = list(module.system_matrix_cells())
+
+        self.assertEqual(len(matrix), 14)
+        self.assertEqual(matrix[0]['number'], 174)
+        self.assertEqual(matrix[-1]['number'], 187)
+        self.assertEqual({cell['model'] for cell in matrix}, {'350m'})
+        self.assertTrue(all(cell['batch_size'] == 1 for cell in matrix))
+        self.assertTrue(all(not cell['activation_checkpointing'] for cell in matrix))
+        self.assertTrue(all(cell['bucket_cap_mb'] == 8192 for cell in matrix))
+        settings = {
+            (cell['world_size'], cell['dtype'], cell['channels'], cell['transport'])
+            for cell in matrix
+        }
+        self.assertEqual(settings, {
+            (4, 'float32', 'default', 'shm'),
+            (4, 'float32', 'one', 'shm'),
+            (8, 'float32', 'default', 'shm'),
+            (8, 'float32', 'one', 'shm'),
+            (8, 'bfloat16', 'default', 'shm'),
+            (8, 'bfloat16', 'one', 'shm'),
+            (8, 'bfloat16', 'one', 'socket'),
+        })
+        self.assertNotIn((4, 'float32', 'one', 'socket'), settings)
+        self.assertNotIn((8, 'float32', 'one', 'socket'), settings)
+        for pair_index in range(0, len(matrix), 2):
+            expected = ['dense', 'greedylore'] if pair_index % 4 == 0 else ['greedylore', 'dense']
+            self.assertEqual(
+                [cell['arm'] for cell in matrix[pair_index:pair_index + 2]],
+                expected,
+            )
+
 
 class MuonSettingMatrixTests(unittest.TestCase):
     def test_matrix_has_nine_groups_four_models_and_two_arms(self):

@@ -150,3 +150,9 @@
 
 - 增加 CM167/169/171/173 GreedyLoRE + Muon，与追加 Dense 使用4卡、BF16、activation checkpointing和论文每卡batch；rank32、EF14、严格阻塞及其余系统配置保持配对一致，每臂一次。
 - 追加组排在首批完整队列之后，产物写入 `outputs/CM166-CM173-table-v-muon-strict-blocking-bf16-paper/`。
+
+### 350M 系统变量精简矩阵
+
+- 用户停止 BF16 论文追加组：GreedyLoRE CM167、CM169 完成，CM171/CM173 未启动；中断的 Dense CM170 不纳入比较。
+- 新增 CM174–CM187 中的 GreedyLoRE 臂，固定350M、batch1、rank32、EF14、严格阻塞和单一大bucket；系统变量为卡数、dtype与通信模式。排除原设计第3、6组，即两个FP32 Socket配置。
+- 共7个配对配置、14臂，每臂一次；相邻配置交替方法运行顺序。Socket仅保留8卡BF16通信受限诊断。
