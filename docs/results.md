@@ -71,6 +71,82 @@
 - 失败原因：输出根目录下对应 `<run_id>.log`；17个失败均明确记录 CUDA OOM。
 - 协议与设置：`docs/table-v-muon-setting-matrix.md`；控制器：`c4/scripts/run_table_v_muon_setting_matrix.py`。
 
+## C4 / LLaMA：严格阻塞通信矩阵（CM188–CM243）
+
+### 实验矩阵与口径
+
+本轮固定本地英文C4、sequence256、每卡batch1、GA1、关闭activation checkpointing、
+seed1243、Muon matrix/scalar LR 0.01/0.001，以及GreedyLoRE `top_subspace` rank32、
+EF14、压缩起点100、投影间隔200。DDP `bucket_cap_mb=8192`，45个完成臂在测量
+窗口中均实际记录为单bucket。每臂预热101步并连续测量更新102–501，共400步；每个
+配置与模型只运行一次。
+
+严格阻塞包装在每个DDP hook入口先CUDA同步，等待原hook Future完成后再次同步。
+`iter`为完整训练步时间；`hook`包含Dense All-Reduce，或GreedyLoRE的评分、压缩、
+collective、解压和投影刷新，不是纯NCCL wire time。`speedup = Dense / GreedyLoRE`，
+大于1表示GreedyLoRE更快。Socket组同时使用单channel、关闭SHM并强制loopback
+Socket，只作为通信受限诊断，不能将差异解释为纯channel效应。
+
+### 完整结果
+
+| 配置 | 模型 | GPU | dtype | channel/后端 | Dense ID | Dense iter (s) | Dense hook (s) | GreedyLoRE ID | GL iter (s) | GL hook (s) | iter speedup | hook speedup |
+| --- | --- | ---: | --- | --- | --- | ---: | ---: | --- | ---: | ---: | ---: | ---: |
+| `ws4-fp32-default` | 60M | 4 | FP32 | default/SHM | CM188 | 0.210814 | 0.030056 | CM189 | 0.249546 | 0.066688 | 0.8448× | 0.4507× |
+| `ws4-fp32-default` | 130M | 4 | FP32 | default/SHM | CM191 | 0.116889 | 0.052309 | CM190 | 0.127061 | 0.064700 | 0.9199× | 0.8085× |
+| `ws4-fp32-default` | 350M | 4 | FP32 | default/SHM | CM192 | 0.298156 | 0.140076 | CM193 | 0.344055 | 0.185251 | 0.8666× | 0.7561× |
+| `ws4-fp32-default` | 1B | 4 | FP32 | default/SHM | CM195 | OOM | OOM | CM194 | OOM | OOM | — | — |
+| `ws4-fp32-ch1` | 60M | 4 | FP32 | one/SHM | CM196 | 0.216180 | 0.036293 | CM197 | 0.249620 | 0.066595 | 0.8660× | 0.5450× |
+| `ws4-fp32-ch1` | 130M | 4 | FP32 | one/SHM | CM199 | 0.119475 | 0.057418 | CM198 | 0.131415 | 0.068621 | 0.9091× | 0.8367× |
+| `ws4-fp32-ch1` | 350M | 4 | FP32 | one/SHM | CM200 | 0.316510 | 0.154594 | CM201 | 0.353045 | 0.192245 | 0.8965× | 0.8042× |
+| `ws4-fp32-ch1` | 1B | 4 | FP32 | one/SHM | CM203 | OOM | OOM | CM202 | OOM | OOM | — | — |
+| `ws8-fp32-default` | 60M | 8 | FP32 | default/SHM | CM204 | 0.218905 | 0.042892 | CM205 | 0.267620 | 0.087943 | 0.8180× | 0.4877× |
+| `ws8-fp32-default` | 130M | 8 | FP32 | default/SHM | CM207 | 0.131965 | 0.067157 | CM206 | 0.130764 | 0.066431 | 1.0092× | 1.0109× |
+| `ws8-fp32-default` | 350M | 8 | FP32 | default/SHM | CM208 | 0.335162 | 0.180162 | CM209 | 0.310899 | 0.157728 | 1.0780× | 1.1422× |
+| `ws8-fp32-default` | 1B | 8 | FP32 | default/SHM | CM211 | OOM | OOM | CM210 | OOM | OOM | — | — |
+| `ws8-fp32-ch1` | 60M | 8 | FP32 | one/SHM | CM212 | 0.229443 | 0.049234 | CM213 | 0.259736 | 0.076440 | 0.8834× | 0.6441× |
+| `ws8-fp32-ch1` | 130M | 8 | FP32 | one/SHM | CM215 | 0.139529 | 0.073461 | CM214 | 0.134929 | 0.069078 | 1.0341× | 1.0634× |
+| `ws8-fp32-ch1` | 350M | 8 | FP32 | one/SHM | CM216 | 0.351927 | 0.194516 | CM217 | 0.323101 | 0.164549 | 1.0892× | 1.1821× |
+| `ws8-fp32-ch1` | 1B | 8 | FP32 | one/SHM | CM219 | OOM | OOM | CM218 | OOM | OOM | — | — |
+| `ws8-bf16-default` | 60M | 8 | BF16 | default/SHM | CM220 | 0.211010 | 0.030079 | CM221 | 0.251648 | 0.070355 | 0.8385× | 0.4275× |
+| `ws8-bf16-default` | 130M | 8 | BF16 | default/SHM | CM223 | 0.095222 | 0.034710 | CM222 | 0.109867 | 0.048421 | 0.8667× | 0.7168× |
+| `ws8-bf16-default` | 350M | 8 | BF16 | default/SHM | CM224 | 0.234273 | 0.092570 | CM225 | 0.261808 | 0.123038 | 0.8948× | 0.7524× |
+| `ws8-bf16-default` | 1B | 8 | BF16 | default/SHM | CM227 | 0.705021 | 0.321028 | CM226 | OOM | OOM | — | — |
+| `ws8-bf16-ch1` | 60M | 8 | BF16 | one/SHM | CM228 | 0.209152 | 0.025031 | CM229 | 0.266598 | 0.079472 | 0.7845× | 0.3150× |
+| `ws8-bf16-ch1` | 130M | 8 | BF16 | one/SHM | CM231 | 0.098735 | 0.036985 | CM230 | 0.111732 | 0.048398 | 0.8837× | 0.7642× |
+| `ws8-bf16-ch1` | 350M | 8 | BF16 | one/SHM | CM232 | 0.248282 | 0.102471 | CM233 | 0.270685 | 0.125408 | 0.9172× | 0.8171× |
+| `ws8-bf16-ch1` | 1B | 8 | BF16 | one/SHM | CM235 | 0.740529 | 0.343012 | CM234 | OOM | OOM | — | — |
+| `ws8-bf16-socket` | 60M | 8 | BF16 | one/Socket | CM236 | 0.317298 | 0.106822 | CM237 | 0.314205 | 0.100043 | 1.0098× | 1.0678× |
+| `ws8-bf16-socket` | 130M | 8 | BF16 | one/Socket | CM239 | 0.345583 | 0.219560 | CM238 | 0.249138 | 0.124254 | 1.3871× | 1.7670× |
+| `ws8-bf16-socket` | 350M | 8 | BF16 | one/Socket | CM240 | 0.960729 | 0.606254 | CM241 | 0.587861 | 0.234025 | 1.6343× | 2.5906× |
+| `ws8-bf16-socket` | 1B | 8 | BF16 | one/Socket | CM243 | 3.373184 | 2.158416 | CM242 | OOM | OOM | — | — |
+
+完成状态：56个实验臂中45个完成、11个失败，形成21组完整配对。逐一核对11个
+失败臂日志，均明确记录CUDA OOM。全部FP32 1B双臂OOM；8卡BF16的三个Dense 1B
+完成，但对应GreedyLoRE均OOM，不能计算配对speedup。
+
+### 结论
+
+- SHM中只有8卡FP32的130M/350M出现完整配对加速。350M默认channel的iter/hook
+  speedup为1.0780×/1.1422×，单channel为1.0892×/1.1821×；130M的增益较小。
+- 4卡FP32的60M–350M以及8卡BF16 SHM的60M–350M均未显示压缩加速。减少channel
+  会缩小部分FP32差距，但BF16下Dense通信字节减半，GreedyLoRE固定计算开销仍占主导。
+- 8卡BF16 Socket的60M/130M/350M iter speedup分别为1.0098×/1.3871×/1.6343×，
+  hook speedup为1.0678×/1.7670×/2.5906×。该结果展示通信受限上界，不代表常规SHM。
+- 严格阻塞和单bucket有意取消反向计算与通信的外部重叠，因此结果支持“串行通信路径”
+  的比较，不能直接外推为正常异步DDP吞吐。每臂仅seed1243一次，属于探索性系统结果。
+
+### 结果来源
+
+- 运行代码版本：`9212f42c9acd629f73be7d4902f77ed91d0ac537`。
+- 身份、完成状态与汇总指标：
+  `outputs/CM188-CM243-table-v-muon-strict-blocking-system-matrix/summary.json`。
+- 每个成功臂的连续窗口、逐步时间、hook时间与bucket布局：对应run目录的
+  `all_results.json`；45个成功文件均核对`measured_steps=400`、
+  `strict_blocking_communication=true`和summary数值一致。
+- 失败原因：输出根目录下对应`<run_id>.log`，11项均确认CUDA OOM。
+- 协议与设置：`docs/table-v-muon-strict-blocking.md`；控制器：
+  `c4/scripts/run_table_v_muon_strict_blocking.py --matrix system`。
+
 ## C4 / LLaMA：Table IV 相关实验
 
 ### 核心设置与结果

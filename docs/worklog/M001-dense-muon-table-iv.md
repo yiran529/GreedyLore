@@ -155,3 +155,5 @@
 - 首次误按仅350M启动CM174，用户补充每个setting须跑四个模型后立即停止；CM174没有完成结果，CM175–CM187未启动，旧目录保留为中断尝试。
 - 正式矩阵改为CM188–CM243，每个setting完整运行60M/130M/350M/1B，统一batch1、无checkpointing；比较4/8卡、FP32/BF16、默认/单channel及8卡BF16 Socket。按用户要求排除4卡与8卡的FP32 Socket配置。
 - 每个系统配置和模型的Dense/GreedyLoRE各一次，并逐对交替执行顺序。完整矩阵与口径见 `docs/table-v-muon-strict-blocking.md`。
+- CM188–CM243队列已结束：56臂中45个完成、11个日志确认CUDA OOM，形成21组完整配对；45个成功结果均完成400步严格阻塞窗口并实际记录单bucket。Dense的8卡BF16 1B三种模式均完成，FP32 1B均OOM。
+- SHM中350M、8卡FP32的Dense/GreedyLoRE iter speedup在默认/单channel下为1.0780×/1.0892×；8卡BF16 Socket 350M为1.6343×。完整表、hook时间、失败项和来源核验见`docs/results.md`。
