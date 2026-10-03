@@ -145,3 +145,8 @@
 - 不修改 `comm_hooks/subspace_hook.py`。独立 timing 包装器在 hook 入口同步、等待原 `top_subspace` Future 完成、再次同步，因而计入压缩、投影选择、collective 与解压，作为通信路径总开销而非纯 NCCL 时间。
 - GreedyLoRE 固定 rank32、EF14、压缩起点100、投影间隔200；预热101步后测量400步。FP32、无 checkpointing、8192 MiB bucket cap、默认 channel、SHM 和 Muon 参数均与配对 Dense 相同。
 - 8 卡 60M FP32/batch1 三步 smoke 覆盖首次投影及普通压缩步并完成；测量步记录 1 个 242,729,984-byte bucket，`mean_blocking_hook_seconds` 成功写入。正式结果待 `outputs/CM134-CM165-table-v-muon-strict-blocking/` 队列完成后补记。
+
+### BF16 论文设置追加组
+
+- 增加 CM167/169/171/173 GreedyLoRE + Muon，与追加 Dense 使用4卡、BF16、activation checkpointing和论文每卡batch；rank32、EF14、严格阻塞及其余系统配置保持配对一致，每臂一次。
+- 追加组排在首批完整队列之后，产物写入 `outputs/CM166-CM173-table-v-muon-strict-blocking-bf16-paper/`。

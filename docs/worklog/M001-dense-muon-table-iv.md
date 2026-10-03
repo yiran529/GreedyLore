@@ -143,3 +143,8 @@
 - 独立 timing 入口在 DDP hook 内同步并等待原 Dense all-reduce Future，记录严格阻塞 hook 时间及实际 bucket 布局；原通信 hook 未修改。统一 `bucket_cap_mb=8192`、关闭 checkpointing、默认 NCCL channel、P2P 关闭、SHM 开启。
 - 四组为论文工作负载参照（4 卡、每卡 batch 128，1B 为 64）、4 卡 batch32、4 卡 batch1、8 卡 batch1。预热 101 步，测量更新 102–501 共 400 步。完整协议见 `docs/table-v-muon-strict-blocking.md`。
 - 静态测试和 dry-run 通过；8 卡 GreedyLoRE smoke 也验证了共用包装器与结果字段。正式产物写入 `outputs/CM134-CM165-table-v-muon-strict-blocking/`，结果待队列完成后补记。
+
+### BF16 论文设置追加组
+
+- 按用户要求增加 CM166/168/170/172 Dense Muon：4 卡、BF16、activation checkpointing、论文每卡 batch（前三个模型128，1B为64），其他严格阻塞与压缩对照设置不变；每臂一次。
+- 追加组不打断或重跑 CM134–CM165，在首批结束后自动启动；输出位于 `outputs/CM166-CM173-table-v-muon-strict-blocking-bf16-paper/`。

@@ -14,6 +14,8 @@ import subprocess
 ROOT = Path(__file__).resolve().parents[2]
 ARTIFACTS = ROOT / 'outputs/CM134-CM165-table-v-muon-strict-blocking'
 START_NUMBER = 134
+BF16_PAPER_ARTIFACTS = ROOT / 'outputs/CM166-CM173-table-v-muon-strict-blocking-bf16-paper'
+BF16_PAPER_START_NUMBER = 166
 WARMUP_ITERATIONS = 101
 MEASURED_ITERATIONS = 400
 BUCKET_CAP_MB = 8192
@@ -29,6 +31,9 @@ GROUPS = (
     ('b32-ws4', 4, 'float32', 32, False, 'default', 'shm'),
     ('b1-ws4', 4, 'float32', 1, False, 'default', 'shm'),
     ('b1-ws8', 8, 'float32', 1, False, 'default', 'shm'),
+)
+BF16_PAPER_GROUPS = (
+    ('paper-batch-ws4-bf16', 4, 'bfloat16', 'paper', True, 'default', 'shm'),
 )
 ARMS = (
     ('dense', 'none', 'm001'),
@@ -54,9 +59,11 @@ def timestamp():
     return datetime.now().astimezone().isoformat()
 
 
-def cells():
-    number = START_NUMBER
-    for group in GROUPS:
+def cells(groups=None, start_number=None, artifacts=None):
+    groups = GROUPS if groups is None else groups
+    number = START_NUMBER if start_number is None else start_number
+    artifacts = ARTIFACTS if artifacts is None else artifacts
+    for group in groups:
         group_name, world_size, dtype, group_batch, checkpointing, channels, transport = group
         for model, config, schedule_steps, lr_warmup_steps, paper_batch in MODELS:
             batch_size = paper_batch if group_batch == 'paper' else group_batch
@@ -129,7 +136,7 @@ def cells():
                     str(BUCKET_CAP_MB),
                     '--strict_blocking_communication',
                     '--output_dir',
-                    str(ARTIFACTS / run_id),
+                    str(artifacts / run_id),
                 ]
                 if checkpointing:
                     command.append('--activation_checkpointing')
@@ -151,6 +158,14 @@ def cells():
                     'command': command,
                 }
                 number += 1
+
+
+def bf16_paper_cells():
+    return cells(
+        groups=BF16_PAPER_GROUPS,
+        start_number=BF16_PAPER_START_NUMBER,
+        artifacts=BF16_PAPER_ARTIFACTS,
+    )
 
 
 def selected_gpus_are_idle(gpus):
@@ -264,10 +279,16 @@ def write_comparisons(rows):
 
 
 def main():
+    global ARTIFACTS, START_NUMBER, GROUPS
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--dry-run', action='store_true')
     parser.add_argument('--gpus', default='0,1,2,3,4,5,6,7')
+    parser.add_argument('--matrix', choices=['fp32', 'bf16-paper'], default='fp32')
     args = parser.parse_args()
+    if args.matrix == 'bf16-paper':
+        ARTIFACTS = BF16_PAPER_ARTIFACTS
+        START_NUMBER = BF16_PAPER_START_NUMBER
+        GROUPS = BF16_PAPER_GROUPS
     all_gpus = args.gpus.split(',')
     if (
         len(all_gpus) != 8 or len(set(all_gpus)) != 8

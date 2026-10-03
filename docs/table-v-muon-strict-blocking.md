@@ -57,3 +57,17 @@ PYTHONPATH=. .venv/bin/python c4/scripts/run_table_v_muon_strict_blocking.py --g
 启动前的 8 卡 60M FP32/batch1 三步 smoke test 覆盖 Dense 预热、首次投影和一次压缩
 测量步，结果位于 `/tmp/strict-blocking-smoke-20261003/`。该步实际记录 1 个 bucket，
 大小 242,729,984 bytes；smoke 数值不用于方法比较。
+
+## BF16 论文设置追加组
+
+用户在首批启动后追加 CM166–CM173，共 4 个模型 × 2 个方法臂，每臂一次。该组使用
+4 卡、BF16、activation checkpointing，并采用论文工作负载的每卡 batch：
+60M/130M/350M 为 128，1B 为 64。模型、C4、序列长、训练调度、Muon、GreedyLoRE、
+严格阻塞包装、8192 MiB bucket cap、默认 NCCL channel 和 101+400 步计时口径与首批
+相同。它在 CM134–CM165 全部尝试结束后自动运行，输出目录为
+`outputs/CM166-CM173-table-v-muon-strict-blocking-bf16-paper/`。
+
+```bash
+PYTHONPATH=. .venv/bin/python c4/scripts/run_table_v_muon_strict_blocking.py \
+  --matrix bf16-paper --gpus 0,1,2,3,4,5,6,7
+```

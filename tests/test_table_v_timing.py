@@ -81,6 +81,27 @@ class StrictBlockingMatrixTests(unittest.TestCase):
             [(4, 64), (4, 64), (4, 32), (4, 32), (4, 1), (4, 1), (8, 1), (8, 1)],
         )
 
+    def test_bf16_paper_followup_has_eight_single_run_cells(self):
+        script = Path('c4/scripts/run_table_v_muon_strict_blocking.py')
+        spec = importlib.util.spec_from_file_location('strict_blocking_bf16', script)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+
+        matrix = list(module.bf16_paper_cells())
+
+        self.assertEqual(len(matrix), 8)
+        self.assertEqual(matrix[0]['number'], 166)
+        self.assertEqual(matrix[-1]['number'], 173)
+        self.assertEqual({cell['group'] for cell in matrix}, {'paper-batch-ws4-bf16'})
+        self.assertTrue(all(cell['world_size'] == 4 for cell in matrix))
+        self.assertTrue(all(cell['dtype'] == 'bfloat16' for cell in matrix))
+        self.assertTrue(all(cell['activation_checkpointing'] for cell in matrix))
+        self.assertTrue(all('--activation_checkpointing' in cell['command'] for cell in matrix))
+        self.assertEqual(
+            [cell['batch_size'] for cell in matrix],
+            [128, 128, 128, 128, 128, 128, 64, 64],
+        )
+
 
 class MuonSettingMatrixTests(unittest.TestCase):
     def test_matrix_has_nine_groups_four_models_and_two_arms(self):
