@@ -36,6 +36,51 @@ class TimingSummaryTests(unittest.TestCase):
             },
         )
 
+    def test_summarizes_strict_blocking_hook_time_from_slowest_rank(self):
+        self.assertTrue(hasattr(timing, 'summarize_blocking_hook_timing'))
+
+        result = timing.summarize_blocking_hook_timing(
+            rank_hook_step_seconds=[[1.0, 2.0], [2.0, 3.0]],
+            rank_bucket_counts=[[1, 1], [1, 1]],
+            rank_bucket_bytes=[[[100], [100]], [[100], [100]]],
+            expected_steps=2,
+        )
+
+        self.assertEqual(result['mean_blocking_hook_seconds'], 2.5)
+        self.assertEqual(result['blocking_hook_slowest_rank'], 1)
+        self.assertEqual(result['observed_bucket_counts'], [1])
+        self.assertEqual(result['observed_bucket_bytes'], [[100]])
+
+
+class StrictBlockingMatrixTests(unittest.TestCase):
+    def test_matrix_has_requested_four_groups_models_and_single_runs(self):
+        script = Path('c4/scripts/run_table_v_muon_strict_blocking.py')
+        self.assertTrue(script.is_file(), f'missing controller: {script}')
+        spec = importlib.util.spec_from_file_location('strict_blocking_matrix', script)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+
+        matrix = list(module.cells())
+
+        self.assertEqual(len(matrix), 32)
+        self.assertEqual(matrix[0]['number'], 134)
+        self.assertEqual(matrix[-1]['number'], 165)
+        self.assertEqual(
+            {cell['group'] for cell in matrix},
+            {'paper-batch-ws4', 'b32-ws4', 'b1-ws4', 'b1-ws8'},
+        )
+        self.assertEqual({cell['model'] for cell in matrix}, {'60m', '130m', '350m', '1b'})
+        self.assertEqual({cell['arm'] for cell in matrix}, {'dense', 'greedylore'})
+        self.assertTrue(all(cell['bucket_cap_mb'] == 8192 for cell in matrix))
+        self.assertTrue(all(cell['dtype'] == 'float32' for cell in matrix))
+        self.assertTrue(all(cell['measured_iterations'] == 400 for cell in matrix))
+        self.assertTrue(all('--strict_blocking_communication' in cell['command'] for cell in matrix))
+        self.assertTrue(all('--activation_checkpointing' not in cell['command'] for cell in matrix))
+        self.assertEqual(
+            [(cell['world_size'], cell['batch_size']) for cell in matrix if cell['model'] == '1b'],
+            [(4, 64), (4, 64), (4, 32), (4, 32), (4, 1), (4, 1), (8, 1), (8, 1)],
+        )
+
 
 class MuonSettingMatrixTests(unittest.TestCase):
     def test_matrix_has_nine_groups_four_models_and_two_arms(self):

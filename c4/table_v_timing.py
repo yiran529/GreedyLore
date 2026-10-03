@@ -10,6 +10,8 @@ import statistics
 import subprocess
 import time
 
+import torch
+
 
 def summarize_timing(rank_elapsed, rank_steps, expected_steps):
     if expected_steps <= 0 or not rank_elapsed or len(rank_elapsed) != len(rank_steps):
@@ -29,6 +31,145 @@ def summarize_timing(rank_elapsed, rank_steps, expected_steps):
         'slowest_rank_iteration_median_seconds': statistics.median(rank_steps[slowest]),
         'rank_iteration_seconds': rank_steps,
     }
+
+
+def summarize_blocking_hook_timing(
+    rank_hook_step_seconds, rank_bucket_counts, rank_bucket_bytes, expected_steps
+):
+    rank_count = len(rank_hook_step_seconds)
+    if (
+        expected_steps <= 0 or rank_count == 0
+        or len(rank_bucket_counts) != rank_count
+        or len(rank_bucket_bytes) != rank_count
+    ):
+        raise ValueError('Invalid blocking hook timing window')
+    for step_seconds, counts, bucket_bytes in zip(
+        rank_hook_step_seconds, rank_bucket_counts, rank_bucket_bytes
+    ):
+        if not (
+            len(step_seconds) == len(counts) == len(bucket_bytes) == expected_steps
+        ):
+            raise ValueError('Incomplete blocking hook timing window')
+        if any(not math.isfinite(value) or value <= 0 for value in step_seconds):
+            raise ValueError('Nonfinite or nonpositive blocking hook time')
+        if any(count <= 0 for count in counts):
+            raise ValueError('A measured step had no communication hooks')
+        if any(len(layout) != count for layout, count in zip(bucket_bytes, counts)):
+            raise ValueError('Bucket layout does not match bucket count')
+        if any(value <= 0 for layout in bucket_bytes for value in layout):
+            raise ValueError('Invalid bucket size')
+    rank_totals = [sum(values) for values in rank_hook_step_seconds]
+    slowest = max(range(rank_count), key=rank_totals.__getitem__)
+    layouts = sorted({
+        tuple(layout)
+        for rank_layouts in rank_bucket_bytes
+        for layout in rank_layouts
+    })
+    return {
+        'mean_blocking_hook_seconds': rank_totals[slowest] / expected_steps,
+        'blocking_hook_slowest_rank': slowest,
+        'rank_blocking_hook_seconds': rank_totals,
+        'rank_hook_step_seconds': rank_hook_step_seconds,
+        'rank_bucket_counts': rank_bucket_counts,
+        'rank_bucket_bytes': rank_bucket_bytes,
+        'observed_bucket_counts': sorted({
+            count for rank_counts in rank_bucket_counts for count in rank_counts
+        }),
+        'observed_bucket_bytes': [list(layout) for layout in layouts],
+    }
+
+
+class StrictBlockingHookState:
+    """Timing-only wrapper state; the wrapped repository hook is unchanged."""
+
+    def __init__(self, inner_state, inner_hook):
+        self.inner_state = inner_state
+        self.inner_hook = inner_hook
+        self._measured = False
+        self._elapsed = []
+        self._bucket_bytes = []
+
+    def begin_step(self, measured):
+        if self._elapsed or self._bucket_bytes:
+            raise RuntimeError('Previous communication timing step was not closed')
+        self._measured = measured
+
+    def record(self, elapsed, bucket_bytes):
+        if self._measured:
+            self._elapsed.append(elapsed)
+            self._bucket_bytes.append(bucket_bytes)
+
+    def end_step(self):
+        if not self._measured:
+            self._elapsed.clear()
+            self._bucket_bytes.clear()
+            return None
+        if not self._elapsed:
+            raise RuntimeError('No DDP communication hook ran during measured backward')
+        result = {
+            'seconds': sum(self._elapsed),
+            'bucket_count': len(self._elapsed),
+            'bucket_bytes': list(self._bucket_bytes),
+        }
+        self._measured = False
+        self._elapsed.clear()
+        self._bucket_bytes.clear()
+        return result
+
+
+def strict_blocking_hook(
+    state: StrictBlockingHookState, bucket: torch.distributed.GradBucket
+) -> torch.futures.Future[torch.Tensor]:
+    device = bucket.buffer().device
+    torch.cuda.synchronize(device)
+    started = time.perf_counter()
+    value = state.inner_hook(state.inner_state, bucket).wait()
+    torch.cuda.synchronize(device)
+    state.record(
+        time.perf_counter() - started,
+        bucket.buffer().numel() * bucket.buffer().element_size(),
+    )
+    completed: torch.futures.Future[torch.Tensor] = torch.futures.Future()
+    completed.set_result(value)
+    return completed
+
+
+def register_timing_comm_hook(model, process_group, args):
+    from comm_hooks.utils import get_uncompress_names, register_comm_hook_for_ddp_model
+
+    if not args.strict_blocking_communication:
+        register_comm_hook_for_ddp_model(model, process_group, args)
+        return None
+    if args.compressor == 'none':
+        from comm_hooks.default_hooks import allreduce_hook
+        inner_state, inner_hook = process_group, allreduce_hook
+    elif args.compressor == 'top_subspace':
+        from comm_hooks.subspace_hook import SubspaceState, subspace_hook
+        inner_state = SubspaceState(
+            process_group=process_group,
+            matrix_approximation_rank=args.compress_rank,
+            min_compression_rate=args.min_compression_rate,
+            update_proj_gap=args.update_proj_gap,
+            use_error_feedback=args.use_error_feedback,
+            start_compress_iter=args.start_compress_iter,
+            uncompressed_names=get_uncompress_names(model),
+            random_seed=args.seed,
+            identity_proj=False,
+            scale=args.scale,
+            random=False,
+            sigma_type=args.sigma_type,
+            beta_ef=args.beta_ef,
+            error_inherit=args.error_inherit,
+        )
+        inner_state.param_to_name = {
+            parameter: name for name, parameter in model.named_parameters()
+        }
+        inner_hook = subspace_hook
+    else:
+        raise ValueError('Strict blocking timing supports none and top_subspace')
+    timing_state = StrictBlockingHookState(inner_state, inner_hook)
+    model.register_comm_hook(timing_state, strict_blocking_hook)
+    return timing_state
 
 
 def build_timing_optimizer(model, args):
@@ -78,6 +219,7 @@ def parse_args():
     parser.add_argument('--lr_warmup_steps', type=int, required=True)
     parser.add_argument('--activation_checkpointing', action='store_true')
     parser.add_argument('--ddp_bucket_cap_mb', type=int)
+    parser.add_argument('--strict_blocking_communication', action='store_true')
     parser.add_argument('--workers', type=int, default=4)
     parser.add_argument('--seed', type=int, default=1243)
     parser.add_argument('--lr', type=float, default=0.01)
@@ -112,7 +254,6 @@ def main():
         return
 
     import numpy as np
-    import torch
     import torch.distributed as dist
     import datasets.distributed
     from transformers import AutoConfig, AutoTokenizer
@@ -120,7 +261,6 @@ def main():
     from c4.pept_utils.dataloader import PreprocessedIterableDataset
     from c4.pept_utils.modeling_llama import LlamaForCausalLM
     from c4.pept_utils.training_utils import get_scheculer
-    from comm_hooks.utils import register_comm_hook_for_ddp_model
 
     rank, local_rank, world_size = (int(os.environ[key]) for key in ['RANK', 'LOCAL_RANK', 'WORLD_SIZE'])
     torch.cuda.set_device(local_rank)
@@ -172,7 +312,7 @@ def main():
     model = torch.nn.parallel.DistributedDataParallel(
         model, **build_ddp_kwargs(args, local_rank)
     )
-    register_comm_hook_for_ddp_model(model, dist.group.WORLD, args)
+    strict_timing_state = register_timing_comm_hook(model, dist.group.WORLD, args)
     parameters = [p for p in model.parameters() if p.requires_grad]
     if rank == 0:
         config.update(parameter_count=parameter_count, model=model_config.to_dict(),
@@ -180,6 +320,7 @@ def main():
         (output / 'config.json').write_text(json.dumps(config, indent=2) + '\n')
         print(f'INITIALIZED params={parameter_count} rank={rank} compressor={args.compressor}', flush=True)
     step_seconds, losses = [], []
+    hook_step_seconds, bucket_counts, bucket_bytes = [], [], []
     window_start = None
     for step in range(args.warmup_iterations + args.measured_iterations):
         if step == args.warmup_iterations:
@@ -190,6 +331,8 @@ def main():
                 print(f'MEASUREMENT_START step={step + 1}', flush=True)
             window_start = time.perf_counter()
         iteration_start = time.perf_counter()
+        if strict_timing_state is not None:
+            strict_timing_state.begin_step(step >= args.warmup_iterations)
         batch = next(batches)  # Data exhaustion is an error; no sample recycling.
         if batch['input_ids'].shape[0] != args.batch_size:
             raise RuntimeError('Partial batch during timing')
@@ -198,6 +341,10 @@ def main():
         labels[labels == tokenizer.pad_token_id] = -100
         loss = model(**batch, labels=labels).loss
         loss.backward()
+        hook_step = (
+            strict_timing_state.end_step()
+            if strict_timing_state is not None else None
+        )
         if args.grad_clipping:
             torch.nn.utils.clip_grad_norm_(parameters, args.grad_clipping)
         optimizer.step()
@@ -208,6 +355,10 @@ def main():
         if step >= args.warmup_iterations:
             step_seconds.append(iteration_end - iteration_start)
             losses.append(loss.detach())
+            if hook_step is not None:
+                hook_step_seconds.append(hook_step['seconds'])
+                bucket_counts.append(hook_step['bucket_count'])
+                bucket_bytes.append(hook_step['bucket_bytes'])
         elif step == 0 or (step + 1) % 100 == 0:
             if rank == 0:
                 print(f'WARMUP step={step+1} loss={loss.item():.6f}', flush=True)
@@ -218,17 +369,31 @@ def main():
     local_result = dict(elapsed=elapsed, steps=step_seconds, losses=local_losses,
                         peak_allocated_bytes=torch.cuda.max_memory_allocated(),
                         peak_reserved_bytes=torch.cuda.max_memory_reserved())
+    if strict_timing_state is not None:
+        local_result.update(
+            hook_step_seconds=hook_step_seconds,
+            bucket_counts=bucket_counts,
+            bucket_bytes=bucket_bytes,
+        )
     gathered = [None] * world_size
     dist.all_gather_object(gathered, local_result)
     if rank == 0:
         result = summarize_timing([r['elapsed'] for r in gathered], [r['steps'] for r in gathered], args.measured_iterations)
         result.update(status='completed', optimizer=args.optimizer, compressor=args.compressor,
+                      strict_blocking_communication=args.strict_blocking_communication,
                       parameter_count=parameter_count, warmup_iterations=args.warmup_iterations,
                       first_measured_update=args.warmup_iterations + 1,
                       last_measured_update=args.warmup_iterations + args.measured_iterations,
                       rank_losses=[r['losses'] for r in gathered],
                       rank_peak_allocated_bytes=[r['peak_allocated_bytes'] for r in gathered],
                       rank_peak_reserved_bytes=[r['peak_reserved_bytes'] for r in gathered])
+        if strict_timing_state is not None:
+            result.update(summarize_blocking_hook_timing(
+                [r['hook_step_seconds'] for r in gathered],
+                [r['bucket_counts'] for r in gathered],
+                [r['bucket_bytes'] for r in gathered],
+                args.measured_iterations,
+            ))
         (output / 'all_results.json').write_text(json.dumps(result, indent=2) + '\n')
         print(f'TIMING_COMPLETED mean_iteration_seconds={result["mean_iteration_seconds"]:.6f}', flush=True)
     dist.destroy_process_group()

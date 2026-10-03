@@ -137,3 +137,9 @@
 - 用户授权比较9组系统设置，每组完整运行60M/130M/350M/1B的Dense与GreedyLoRE；Dense臂为CM062–CM133中的偶数编号。完整协议见 `docs/table-v-muon-setting-matrix.md`。
 - 全部组使用Muon、C4、sequence256、rank32配对协议和1024 MB DDP bucket。设置覆盖4/8 GPU、BF16/FP32、每卡batch 1/32/论文大batch、默认/单NCCL channel、SHM/Socket；除论文大batch参照外关闭activation checkpointing。
 - 计时预热101步并连续测量400步；OOM或超时记为失败并继续，不自动改变配置。入口只为独立timing路径增加DDP bucket参数，不修改原训练入口或GreedyLoRE hook。
+## 2026-10-03：严格阻塞通信测速
+
+- 新增 CM134–CM165 矩阵中的 Dense Muon 偶数臂，与每个 GreedyLoRE 臂使用相同模型、batch、GPU 数、FP32、Muon 和系统配置；每臂只运行一次。
+- 独立 timing 入口在 DDP hook 内同步并等待原 Dense all-reduce Future，记录严格阻塞 hook 时间及实际 bucket 布局；原通信 hook 未修改。统一 `bucket_cap_mb=8192`、关闭 checkpointing、默认 NCCL channel、P2P 关闭、SHM 开启。
+- 四组为论文工作负载参照（4 卡、每卡 batch 128，1B 为 64）、4 卡 batch32、4 卡 batch1、8 卡 batch1。预热 101 步，测量更新 102–501 共 400 步。完整协议见 `docs/table-v-muon-strict-blocking.md`。
+- 静态测试和 dry-run 通过；8 卡 GreedyLoRE smoke 也验证了共用包装器与结果字段。正式产物写入 `outputs/CM134-CM165-table-v-muon-strict-blocking/`，结果待队列完成后补记。
