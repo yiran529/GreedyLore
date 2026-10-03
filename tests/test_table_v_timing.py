@@ -110,10 +110,12 @@ class StrictBlockingMatrixTests(unittest.TestCase):
 
         matrix = list(module.system_matrix_cells())
 
-        self.assertEqual(len(matrix), 14)
-        self.assertEqual(matrix[0]['number'], 174)
-        self.assertEqual(matrix[-1]['number'], 187)
-        self.assertEqual({cell['model'] for cell in matrix}, {'350m'})
+        self.assertEqual(len(matrix), 56)
+        self.assertEqual(matrix[0]['number'], 188)
+        self.assertEqual(matrix[-1]['number'], 243)
+        self.assertEqual(
+            {cell['model'] for cell in matrix}, {'60m', '130m', '350m', '1b'}
+        )
         self.assertTrue(all(cell['batch_size'] == 1 for cell in matrix))
         self.assertTrue(all(not cell['activation_checkpointing'] for cell in matrix))
         self.assertTrue(all(cell['bucket_cap_mb'] == 8192 for cell in matrix))

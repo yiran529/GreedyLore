@@ -75,12 +75,14 @@ PYTHONPATH=. .venv/bin/python c4/scripts/run_table_v_muon_strict_blocking.py \
 用户随后停止该追加组：CM166–CM169 已完成，CM170 在运行中终止，CM171–CM173
 未启动。保留已有产物，但不把中断的 CM170 作为完成结果。
 
-## 350M 通信模式、dtype 与卡数矩阵
+## 通信模式、dtype 与卡数矩阵
 
-CM174–CM187 固定 350M、每卡 batch1、sequence256、GA1、关闭 checkpointing，
-继续使用严格阻塞、8192 MiB bucket、rank32、EF14 和 101+400 步口径。根据用户选择，
-删除原设计的 4卡/FP32/Socket 与 8卡/FP32/Socket，只运行下列7个配置；每个配置包含
-Dense 与 GreedyLoRE 各一次，共14臂。
+首次误按仅350M生成CM174–CM187，CM174刚启动即因用户补充范围而停止，没有完成结果；
+该输出目录只作为中断尝试保留。正式矩阵改为CM188–CM243：每个setting完整运行
+60M/130M/350M/1B，每卡batch1、sequence256、GA1、关闭checkpointing，继续使用
+严格阻塞、8192 MiB bucket、rank32、EF14和101+400步口径。根据用户选择，删除
+4卡/FP32/Socket与8卡/FP32/Socket，只运行下列7个setting；每个setting包含4模型、
+Dense与GreedyLoRE各一次，共56臂。
 
 | 组 | GPU | dtype | channel | transport |
 | --- | ---: | --- | --- | --- |
@@ -94,7 +96,7 @@ Dense 与 GreedyLoRE 各一次，共14臂。
 
 相邻配置交替 Dense/GreedyLoRE 的先后顺序，降低固定运行顺序与机器时间漂移的混杂。
 Socket 组同时改变 transport 与 channel，只解释为通信受限模式，不能归因于纯 channel
-效应。输出目录为 `outputs/CM174-CM187-table-v-muon-strict-blocking-system-matrix/`。
+效应。输出目录为 `outputs/CM188-CM243-table-v-muon-strict-blocking-system-matrix/`。
 
 ```bash
 PYTHONPATH=. .venv/bin/python c4/scripts/run_table_v_muon_strict_blocking.py \

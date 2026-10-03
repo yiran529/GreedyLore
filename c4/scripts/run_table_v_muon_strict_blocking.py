@@ -16,8 +16,8 @@ ARTIFACTS = ROOT / 'outputs/CM134-CM165-table-v-muon-strict-blocking'
 START_NUMBER = 134
 BF16_PAPER_ARTIFACTS = ROOT / 'outputs/CM166-CM173-table-v-muon-strict-blocking-bf16-paper'
 BF16_PAPER_START_NUMBER = 166
-SYSTEM_MATRIX_ARTIFACTS = ROOT / 'outputs/CM174-CM187-table-v-muon-strict-blocking-system-matrix'
-SYSTEM_MATRIX_START_NUMBER = 174
+SYSTEM_MATRIX_ARTIFACTS = ROOT / 'outputs/CM188-CM243-table-v-muon-strict-blocking-system-matrix'
+SYSTEM_MATRIX_START_NUMBER = 188
 WARMUP_ITERATIONS = 101
 MEASURED_ITERATIONS = 400
 BUCKET_CAP_MB = 8192
@@ -46,9 +46,7 @@ SYSTEM_MATRIX_GROUPS = (
     ('ws8-bf16-ch1', 8, 'bfloat16', 1, False, 'one', 'shm'),
     ('ws8-bf16-socket', 8, 'bfloat16', 1, False, 'one', 'socket'),
 )
-SYSTEM_MATRIX_MODELS = (
-    ('350m', 'llama_350m.json', 60000, 6000, 128),
-)
+SYSTEM_MATRIX_MODELS = MODELS
 ARMS = (
     ('dense', 'none', 'm001'),
     ('greedylore', 'top_subspace', 'm002'),
@@ -83,9 +81,10 @@ def cells(
     models = MODELS if models is None else models
     for group_index, group in enumerate(groups):
         group_name, world_size, dtype, group_batch, checkpointing, channels, transport = group
-        for model, config, schedule_steps, lr_warmup_steps, paper_batch in models:
+        for model_index, (model, config, schedule_steps, lr_warmup_steps, paper_batch) in enumerate(models):
             batch_size = paper_batch if group_batch == 'paper' else group_batch
-            arms = tuple(reversed(ARMS)) if alternate_arms and group_index % 2 else ARMS
+            pair_index = group_index * len(models) + model_index
+            arms = tuple(reversed(ARMS)) if alternate_arms and pair_index % 2 else ARMS
             for arm, compressor, method in arms:
                 run_id = (
                     f'CM{number:03d}-{method}-{arm}-muon-llama{model}-c4-'
