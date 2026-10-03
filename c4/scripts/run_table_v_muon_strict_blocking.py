@@ -251,10 +251,10 @@ def write_comparisons(rows):
                     (dense_seconds - method_seconds) / dense_seconds * 100
                 ),
                 'dense_blocking_hook_seconds': dense['mean_blocking_hook_seconds'],
-                'greedylore_blocking_hook_seconds': method['mean_blocking_hook_seconds'],
+                'greedylore_blocking_hook_seconds': greedylore['mean_blocking_hook_seconds'],
                 'blocking_hook_speedup': (
                     dense['mean_blocking_hook_seconds']
-                    / method['mean_blocking_hook_seconds']
+                    / greedylore['mean_blocking_hook_seconds']
                 ),
             })
     (ARTIFACTS / 'comparisons.json').write_text(
