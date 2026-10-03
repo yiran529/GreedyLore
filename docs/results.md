@@ -1,6 +1,75 @@
-# GreedyLoRE + Muon 实验结果（2026-10-02 更新）
+# GreedyLoRE + Muon 实验结果（2026-10-03 更新）
 
 以下均为本仓库复现实验，**不是论文报告值**。每项只运行 seed 1243 一次，因此差异仅作初步观察。原始结果位于 `outputs/<完整 run ID>/all_results.json`，日志位于同目录的 `train.log`；完整 run ID 可由表中编号在 `outputs/` 下唯一定位。输出目录被 Git 忽略，本文保留可提交的结果摘要。
+
+## C4 / LLaMA：GreedyLoRE Muon timing 设置矩阵（2026-10-03）
+
+### 实验矩阵与计时口径
+
+本轮是探索性系统实验，目标是在不修改 GreedyLoRE 原始通信 hook 的前提下，比较模型规模、每卡 batch、world size、梯度 dtype、NCCL channel 和通信后端对端到端训练更新时间的影响。结果不是 GreedyLoRE 论文 AdamW timing 的数值复现，也不评价短窗口内的收敛质量。
+
+共同设置为本地英文 C4、序列长 256、seed 1243、Muon matrix/scalar LR 0.01/0.001、DDP `bucket_cap_mb=1024`、GreedyLoRE `top_subspace` rank 32、EF14、压缩起点 100、投影间隔 200。各臂先完成 101 个不计时更新，再连续测量更新 102–501 共 400 步；GreedyLoRE 窗口包含更新 301 和 501 的两次周期投影刷新。表中每步时间为最慢 rank 的连续窗口总墙钟时间除以 400，完整计入数据读取、forward/backward、DDP hook、梯度裁剪、Muon step、scheduler、zero_grad 和逐步 CUDA 同步。
+
+`speedup = Dense 时间 / GreedyLoRE 时间`，大于 1 表示 GreedyLoRE 更快；耗时变化为 `(Dense−GreedyLoRE)/Dense`，正值表示节省。所有运行均为 seed 1243 的一次独立进程轨迹，400个更新步不是400次独立重复。
+
+### 完整结果
+
+| 配置组 | 模型 | GPU | dtype | batch/GPU | checkpoint | channel | 后端 | Dense ID | Dense (s/step) | GreedyLoRE ID | GreedyLoRE (s/step) | speedup | 耗时变化 |
+| --- | --- | ---: | --- | ---: | --- | --- | --- | --- | ---: | --- | ---: | ---: | ---: |
+| `gl-paper-batch` | 60M | 4 | BF16 | 128 | 开 | default | SHM | CM062 | 0.413976 | CM063 | 0.463586 | 0.8930× | -11.98% |
+| `gl-paper-batch` | 130M | 4 | BF16 | 128 | 开 | default | SHM | CM064 | 0.475738 | CM065 | 0.493516 | 0.9640× | -3.74% |
+| `gl-paper-batch` | 350M | 4 | BF16 | 128 | 开 | default | SHM | CM066 | 1.309372 | CM067 | 1.355402 | 0.9660× | -3.52% |
+| `gl-paper-batch` | 1B | 4 | BF16 | 64 | 开 | default | SHM | CM068 | 2.213754 | CM069 | OOM | — | — |
+| `ws4-bf16-b1-default` | 60M | 4 | BF16 | 1 | 关 | default | SHM | CM070 | 0.190665 | CM071 | 0.248289 | 0.7679× | -30.22% |
+| `ws4-bf16-b1-default` | 130M | 4 | BF16 | 1 | 关 | default | SHM | CM072 | 0.084836 | CM073 | 0.102599 | 0.8269× | -20.94% |
+| `ws4-bf16-b1-default` | 350M | 4 | BF16 | 1 | 关 | default | SHM | CM074 | 0.213076 | CM075 | 0.264482 | 0.8056× | -24.13% |
+| `ws4-bf16-b1-default` | 1B | 4 | BF16 | 1 | 关 | default | SHM | CM076 | 0.649694 | CM077 | OOM | — | — |
+| `ws4-fp32-b1-default` | 60M | 4 | FP32 | 1 | 关 | default | SHM | CM078 | 0.202492 | CM079 | 0.246487 | 0.8215× | -21.73% |
+| `ws4-fp32-b1-default` | 130M | 4 | FP32 | 1 | 关 | default | SHM | CM080 | 0.115384 | CM081 | 0.128763 | 0.8961× | -11.59% |
+| `ws4-fp32-b1-default` | 350M | 4 | FP32 | 1 | 关 | default | SHM | CM082 | 0.289404 | CM083 | 0.346010 | 0.8364× | -19.56% |
+| `ws4-fp32-b1-default` | 1B | 4 | FP32 | 1 | 关 | default | SHM | CM084 | OOM | CM085 | OOM | — | — |
+| `ws4-fp32-b1-ch1` | 60M | 4 | FP32 | 1 | 关 | one | SHM | CM086 | 0.206166 | CM087 | 0.250983 | 0.8214× | -21.74% |
+| `ws4-fp32-b1-ch1` | 130M | 4 | FP32 | 1 | 关 | one | SHM | CM088 | 0.119089 | CM089 | 0.129550 | 0.9192× | -8.78% |
+| `ws4-fp32-b1-ch1` | 350M | 4 | FP32 | 1 | 关 | one | SHM | CM090 | 0.302981 | CM091 | 0.352453 | 0.8596× | -16.33% |
+| `ws4-fp32-b1-ch1` | 1B | 4 | FP32 | 1 | 关 | one | SHM | CM092 | OOM | CM093 | OOM | — | — |
+| `ws8-fp32-b1-default` | 60M | 8 | FP32 | 1 | 关 | default | SHM | CM094 | 0.211907 | CM095 | 0.255914 | 0.8280× | -20.77% |
+| `ws8-fp32-b1-default` | 130M | 8 | FP32 | 1 | 关 | default | SHM | CM096 | 0.132877 | CM097 | 0.129682 | 1.0246× | +2.40% |
+| `ws8-fp32-b1-default` | 350M | 8 | FP32 | 1 | 关 | default | SHM | CM098 | 0.323979 | CM099 | 0.313733 | 1.0327× | +3.16% |
+| `ws8-fp32-b1-default` | 1B | 8 | FP32 | 1 | 关 | default | SHM | CM100 | OOM | CM101 | OOM | — | — |
+| `ws8-fp32-b1-ch1` | 60M | 8 | FP32 | 1 | 关 | one | SHM | CM102 | 0.220575 | CM103 | 0.256064 | 0.8614× | -16.09% |
+| `ws8-fp32-b1-ch1` | 130M | 8 | FP32 | 1 | 关 | one | SHM | CM104 | 0.136509 | CM105 | 0.133722 | 1.0208× | +2.04% |
+| `ws8-fp32-b1-ch1` | 350M | 8 | FP32 | 1 | 关 | one | SHM | CM106 | 0.342953 | CM107 | 0.319509 | 1.0734× | +6.84% |
+| `ws8-fp32-b1-ch1` | 1B | 8 | FP32 | 1 | 关 | one | SHM | CM108 | OOM | CM109 | OOM | — | — |
+| `ws8-bf16-b1-ch1` | 60M | 8 | BF16 | 1 | 关 | one | SHM | CM110 | 0.202079 | CM111 | 0.253615 | 0.7968× | -25.50% |
+| `ws8-bf16-b1-ch1` | 130M | 8 | BF16 | 1 | 关 | one | SHM | CM112 | 0.096831 | CM113 | 0.111335 | 0.8697× | -14.98% |
+| `ws8-bf16-b1-ch1` | 350M | 8 | BF16 | 1 | 关 | one | SHM | CM114 | 0.238803 | CM115 | 0.270175 | 0.8839× | -13.14% |
+| `ws8-bf16-b1-ch1` | 1B | 8 | BF16 | 1 | 关 | one | SHM | CM116 | 0.729854 | CM117 | OOM | — | — |
+| `ws8-fp32-b32-ch1` | 60M | 8 | FP32 | 32 | 关 | one | SHM | CM118 | 0.258105 | CM119 | 0.299888 | 0.8607× | -16.19% |
+| `ws8-fp32-b32-ch1` | 130M | 8 | FP32 | 32 | 关 | one | SHM | CM120 | 0.292990 | CM121 | 0.290429 | 1.0088× | +0.87% |
+| `ws8-fp32-b32-ch1` | 350M | 8 | FP32 | 32 | 关 | one | SHM | CM122 | OOM | CM123 | OOM | — | — |
+| `ws8-fp32-b32-ch1` | 1B | 8 | FP32 | 32 | 关 | one | SHM | CM124 | OOM | CM125 | OOM | — | — |
+| `ws8-fp32-b1-ch1-socket` | 60M | 8 | FP32 | 1 | 关 | one | SOCKET | CM126 | 0.400752 | CM127 | 0.352109 | 1.1381× | +12.14% |
+| `ws8-fp32-b1-ch1-socket` | 130M | 8 | FP32 | 1 | 关 | one | SOCKET | CM128 | 0.566923 | CM129 | 0.345921 | 1.6389× | +38.98% |
+| `ws8-fp32-b1-ch1-socket` | 350M | 8 | FP32 | 1 | 关 | one | SOCKET | CM130 | 1.554621 | CM131 | 0.743417 | 2.0912× | +52.18% |
+| `ws8-fp32-b1-ch1-socket` | 1B | 8 | FP32 | 1 | 关 | one | SOCKET | CM132 | OOM | CM133 | OOM | — | — |
+
+完成状态：72个实验臂中55个完成、17个失败，共形成26组完整配对。逐一核对17个失败臂的日志，均观察到 `CUDA out of memory`；表中因此标为 OOM。1B 的部分 BF16 Dense 臂完成，但对应 GreedyLoRE 臂 OOM，不能形成方法比较。
+
+### 结论
+
+- 在实际 SHM 后端中，最有利且完整的结果是350M、8 GPU、FP32、每卡 batch 1、单 channel：Dense/GreedyLoRE 分别为0.342953/0.319509 s，speedup为 **1.0734×**，端到端耗时降低 **6.84%**。相同配置使用默认 channel 时为1.0327×、降低3.16%。
+- 同一350M单 channel设置改为BF16后，GreedyLoRE慢13.14%；4 GPU FP32 batch 1时也仍慢16.33%。这说明本轮观察到的SHM优势依赖8 GPU、FP32和低计算负载的组合，不能外推为所有训练设置均有优势。
+- GreedyLoRE论文大 batch 本地参照中，60M/130M/350M分别慢11.98%/3.74%/3.52%。每卡batch 32时，60M慢16.19%，130M仅快0.87%，350M和1B双臂OOM。
+- Socket/loopback带宽受限诊断中，60M/130M/350M的speedup分别为1.1381×/1.6389×/2.0912×，端到端耗时降低12.14%/38.98%/52.18%。该组用于显示通信受限上界，不作为常规本机SHM训练结论。
+- 所有设置都只有一次独立运行，且配置是在查看先前 ARC-TopK 与 GreedyLoRE timing 后选择的探索性矩阵。6.84%的SHM优势是候选结果，仍需对固定配置做独立重复后才能作为稳健结论。
+
+### 结果来源
+
+- 运行代码版本：`d008aa5978b7531fce465ec2ef1991c1ab3be11e`。
+- 完成状态、身份和主指标：`outputs/CM062-CM133-table-v-muon-setting-matrix/summary.json`。
+- 每个完成臂的连续窗口、逐步时间和最慢 rank：对应 run 目录的 `all_results.json`。
+- 失败原因：输出根目录下对应 `<run_id>.log`；17个失败均明确记录 CUDA OOM。
+- 协议与设置：`docs/table-v-muon-setting-matrix.md`；控制器：`c4/scripts/run_table_v_muon_setting_matrix.py`。
 
 ## C4 / LLaMA：Table IV 相关实验
 
