@@ -157,3 +157,8 @@
 - 每个系统配置和模型的Dense/GreedyLoRE各一次，并逐对交替执行顺序。完整矩阵与口径见 `docs/table-v-muon-strict-blocking.md`。
 - CM188–CM243队列已结束：56臂中45个完成、11个日志确认CUDA OOM，形成21组完整配对；45个成功结果均完成400步严格阻塞窗口并实际记录单bucket。Dense的8卡BF16 1B三种模式均完成，FP32 1B均OOM。
 - SHM中350M、8卡FP32的Dense/GreedyLoRE iter speedup在默认/单channel下为1.0780×/1.0892×；8卡BF16 Socket 350M为1.6343×。完整表、hook时间、失败项和来源核验见`docs/results.md`。
+
+### 正常异步 DDP bucket sweep
+
+- 新增Dense CM244/CM246，固定350M、8卡、FP32、batch1、默认channel/SHM和其余Muon设置，仅将DDP bucket cap设为256/1024 MiB；不用严格阻塞，测量正常异步端到端时间。
+- timing入口的被动包装器只记录实际bucket布局并原样返回Dense all-reduce Future，不同步、不等待。预热101步、测量400步；完整协议见`docs/table-v-muon-strict-blocking.md`。

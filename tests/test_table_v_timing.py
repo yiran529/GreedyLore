@@ -51,6 +51,18 @@ class TimingSummaryTests(unittest.TestCase):
         self.assertEqual(result['observed_bucket_counts'], [1])
         self.assertEqual(result['observed_bucket_bytes'], [[100]])
 
+    def test_summarizes_passive_bucket_layout(self):
+        self.assertTrue(hasattr(timing, 'summarize_bucket_layout'))
+
+        result = timing.summarize_bucket_layout(
+            rank_bucket_counts=[[2, 2], [2, 2]],
+            rank_bucket_bytes=[[[60, 40], [60, 40]], [[60, 40], [60, 40]]],
+            expected_steps=2,
+        )
+
+        self.assertEqual(result['observed_bucket_counts'], [2])
+        self.assertEqual(result['observed_bucket_bytes'], [[60, 40]])
+
 
 class StrictBlockingMatrixTests(unittest.TestCase):
     def test_matrix_has_requested_four_groups_models_and_single_runs(self):
@@ -140,6 +152,25 @@ class StrictBlockingMatrixTests(unittest.TestCase):
                 [cell['arm'] for cell in matrix[pair_index:pair_index + 2]],
                 expected,
             )
+
+    def test_bucket_sweep_has_two_caps_and_normal_async_hooks(self):
+        script = Path('c4/scripts/run_table_v_muon_strict_blocking.py')
+        spec = importlib.util.spec_from_file_location('bucket_sweep', script)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+
+        matrix = list(module.bucket_sweep_cells())
+
+        self.assertEqual(len(matrix), 4)
+        self.assertEqual(matrix[0]['number'], 244)
+        self.assertEqual(matrix[-1]['number'], 247)
+        self.assertEqual({cell['model'] for cell in matrix}, {'350m'})
+        self.assertEqual({cell['bucket_cap_mb'] for cell in matrix}, {256, 1024})
+        self.assertTrue(all(cell['world_size'] == 8 for cell in matrix))
+        self.assertTrue(all(cell['dtype'] == 'float32' for cell in matrix))
+        self.assertTrue(all(cell['batch_size'] == 1 for cell in matrix))
+        self.assertTrue(all('--record_bucket_layout' in cell['command'] for cell in matrix))
+        self.assertTrue(all('--strict_blocking_communication' not in cell['command'] for cell in matrix))
 
 
 class MuonSettingMatrixTests(unittest.TestCase):

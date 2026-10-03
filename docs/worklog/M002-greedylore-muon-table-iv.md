@@ -159,3 +159,8 @@
 - 共7个setting、4模型、56臂，每臂一次；逐模型配对并交替方法运行顺序。Socket仅保留8卡BF16通信受限诊断。
 - CM188–CM243已全部尝试：GreedyLoRE在60M/130M/350M的21个setting-model组合全部完成，三个8卡BF16 1B与全部FP32 1B均OOM；失败日志均明确记录CUDA OOM。
 - 8卡FP32 SHM的130M/350M在默认及单channel下出现小幅严格阻塞加速；8卡BF16 Socket的130M/350M iter speedup为1.3871×/1.6343×、hook speedup为1.7670×/2.5906×。其余大部分配置慢于Dense；结果为n=1的通信受限诊断，完整证据见`docs/results.md`。
+
+### 正常异步 DDP bucket sweep
+
+- 新增GreedyLoRE CM245/CM247，与配对Dense共同使用350M、8卡、FP32、batch1、默认channel/SHM；bucket cap分别为256/1024 MiB，rank32、EF14、压缩起点100和投影间隔200不变。
+- 不启用严格阻塞。被动包装器只记录每步实际bucket布局并返回原`top_subspace` Future，用端到端iteration time比较不同bucket下的正常overlap收益；每臂一次。

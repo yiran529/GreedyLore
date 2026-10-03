@@ -79,6 +79,34 @@ def summarize_blocking_hook_timing(
     }
 
 
+def summarize_bucket_layout(rank_bucket_counts, rank_bucket_bytes, expected_steps):
+    rank_count = len(rank_bucket_counts)
+    if expected_steps <= 0 or rank_count == 0 or len(rank_bucket_bytes) != rank_count:
+        raise ValueError('Invalid bucket layout window')
+    for counts, bucket_bytes in zip(rank_bucket_counts, rank_bucket_bytes):
+        if len(counts) != expected_steps or len(bucket_bytes) != expected_steps:
+            raise ValueError('Incomplete bucket layout window')
+        if any(count <= 0 for count in counts):
+            raise ValueError('A measured step had no communication hooks')
+        if any(len(layout) != count for layout, count in zip(bucket_bytes, counts)):
+            raise ValueError('Bucket layout does not match bucket count')
+        if any(value <= 0 for layout in bucket_bytes for value in layout):
+            raise ValueError('Invalid bucket size')
+    layouts = sorted({
+        tuple(layout)
+        for rank_layouts in rank_bucket_bytes
+        for layout in rank_layouts
+    })
+    return {
+        'rank_bucket_counts': rank_bucket_counts,
+        'rank_bucket_bytes': rank_bucket_bytes,
+        'observed_bucket_counts': sorted({
+            count for rank_counts in rank_bucket_counts for count in rank_counts
+        }),
+        'observed_bucket_bytes': [list(layout) for layout in layouts],
+    }
+
+
 class StrictBlockingHookState:
     """Timing-only wrapper state; the wrapped repository hook is unchanged."""
 
@@ -117,6 +145,39 @@ class StrictBlockingHookState:
         return result
 
 
+class BucketRecordingHookState:
+    """Observe bucket layout without waiting on or synchronizing the inner hook."""
+
+    def __init__(self, inner_state, inner_hook):
+        self.inner_state = inner_state
+        self.inner_hook = inner_hook
+        self._measured = False
+        self._bucket_bytes = []
+
+    def begin_step(self, measured):
+        if self._bucket_bytes:
+            raise RuntimeError('Previous bucket recording step was not closed')
+        self._measured = measured
+
+    def record(self, bucket_bytes):
+        if self._measured:
+            self._bucket_bytes.append(bucket_bytes)
+
+    def end_step(self):
+        if not self._measured:
+            self._bucket_bytes.clear()
+            return None
+        if not self._bucket_bytes:
+            raise RuntimeError('No DDP communication hook ran during measured backward')
+        result = {
+            'bucket_count': len(self._bucket_bytes),
+            'bucket_bytes': list(self._bucket_bytes),
+        }
+        self._measured = False
+        self._bucket_bytes.clear()
+        return result
+
+
 def strict_blocking_hook(
     state: StrictBlockingHookState, bucket: torch.distributed.GradBucket
 ) -> torch.futures.Future[torch.Tensor]:
@@ -134,10 +195,17 @@ def strict_blocking_hook(
     return completed
 
 
+def bucket_recording_hook(
+    state: BucketRecordingHookState, bucket: torch.distributed.GradBucket
+) -> torch.futures.Future[torch.Tensor]:
+    state.record(bucket.buffer().numel() * bucket.buffer().element_size())
+    return state.inner_hook(state.inner_state, bucket)
+
+
 def register_timing_comm_hook(model, process_group, args):
     from comm_hooks.utils import get_uncompress_names, register_comm_hook_for_ddp_model
 
-    if not args.strict_blocking_communication:
+    if not args.strict_blocking_communication and not args.record_bucket_layout:
         register_comm_hook_for_ddp_model(model, process_group, args)
         return None
     if args.compressor == 'none':
@@ -167,8 +235,13 @@ def register_timing_comm_hook(model, process_group, args):
         inner_hook = subspace_hook
     else:
         raise ValueError('Strict blocking timing supports none and top_subspace')
-    timing_state = StrictBlockingHookState(inner_state, inner_hook)
-    model.register_comm_hook(timing_state, strict_blocking_hook)
+    if args.strict_blocking_communication:
+        timing_state = StrictBlockingHookState(inner_state, inner_hook)
+        timing_hook = strict_blocking_hook
+    else:
+        timing_state = BucketRecordingHookState(inner_state, inner_hook)
+        timing_hook = bucket_recording_hook
+    model.register_comm_hook(timing_state, timing_hook)
     return timing_state
 
 
@@ -220,6 +293,7 @@ def parse_args():
     parser.add_argument('--activation_checkpointing', action='store_true')
     parser.add_argument('--ddp_bucket_cap_mb', type=int)
     parser.add_argument('--strict_blocking_communication', action='store_true')
+    parser.add_argument('--record_bucket_layout', action='store_true')
     parser.add_argument('--workers', type=int, default=4)
     parser.add_argument('--seed', type=int, default=1243)
     parser.add_argument('--lr', type=float, default=0.01)
@@ -312,7 +386,7 @@ def main():
     model = torch.nn.parallel.DistributedDataParallel(
         model, **build_ddp_kwargs(args, local_rank)
     )
-    strict_timing_state = register_timing_comm_hook(model, dist.group.WORLD, args)
+    timing_hook_state = register_timing_comm_hook(model, dist.group.WORLD, args)
     parameters = [p for p in model.parameters() if p.requires_grad]
     if rank == 0:
         config.update(parameter_count=parameter_count, model=model_config.to_dict(),
@@ -331,8 +405,8 @@ def main():
                 print(f'MEASUREMENT_START step={step + 1}', flush=True)
             window_start = time.perf_counter()
         iteration_start = time.perf_counter()
-        if strict_timing_state is not None:
-            strict_timing_state.begin_step(step >= args.warmup_iterations)
+        if timing_hook_state is not None:
+            timing_hook_state.begin_step(step >= args.warmup_iterations)
         batch = next(batches)  # Data exhaustion is an error; no sample recycling.
         if batch['input_ids'].shape[0] != args.batch_size:
             raise RuntimeError('Partial batch during timing')
@@ -342,8 +416,8 @@ def main():
         loss = model(**batch, labels=labels).loss
         loss.backward()
         hook_step = (
-            strict_timing_state.end_step()
-            if strict_timing_state is not None else None
+            timing_hook_state.end_step()
+            if timing_hook_state is not None else None
         )
         if args.grad_clipping:
             torch.nn.utils.clip_grad_norm_(parameters, args.grad_clipping)
@@ -356,7 +430,8 @@ def main():
             step_seconds.append(iteration_end - iteration_start)
             losses.append(loss.detach())
             if hook_step is not None:
-                hook_step_seconds.append(hook_step['seconds'])
+                if 'seconds' in hook_step:
+                    hook_step_seconds.append(hook_step['seconds'])
                 bucket_counts.append(hook_step['bucket_count'])
                 bucket_bytes.append(hook_step['bucket_bytes'])
         elif step == 0 or (step + 1) % 100 == 0:
@@ -369,27 +444,35 @@ def main():
     local_result = dict(elapsed=elapsed, steps=step_seconds, losses=local_losses,
                         peak_allocated_bytes=torch.cuda.max_memory_allocated(),
                         peak_reserved_bytes=torch.cuda.max_memory_reserved())
-    if strict_timing_state is not None:
+    if timing_hook_state is not None:
         local_result.update(
-            hook_step_seconds=hook_step_seconds,
             bucket_counts=bucket_counts,
             bucket_bytes=bucket_bytes,
         )
+        if args.strict_blocking_communication:
+            local_result['hook_step_seconds'] = hook_step_seconds
     gathered = [None] * world_size
     dist.all_gather_object(gathered, local_result)
     if rank == 0:
         result = summarize_timing([r['elapsed'] for r in gathered], [r['steps'] for r in gathered], args.measured_iterations)
         result.update(status='completed', optimizer=args.optimizer, compressor=args.compressor,
                       strict_blocking_communication=args.strict_blocking_communication,
+                      bucket_layout_recorded=timing_hook_state is not None,
                       parameter_count=parameter_count, warmup_iterations=args.warmup_iterations,
                       first_measured_update=args.warmup_iterations + 1,
                       last_measured_update=args.warmup_iterations + args.measured_iterations,
                       rank_losses=[r['losses'] for r in gathered],
                       rank_peak_allocated_bytes=[r['peak_allocated_bytes'] for r in gathered],
                       rank_peak_reserved_bytes=[r['peak_reserved_bytes'] for r in gathered])
-        if strict_timing_state is not None:
+        if args.strict_blocking_communication:
             result.update(summarize_blocking_hook_timing(
                 [r['hook_step_seconds'] for r in gathered],
+                [r['bucket_counts'] for r in gathered],
+                [r['bucket_bytes'] for r in gathered],
+                args.measured_iterations,
+            ))
+        elif timing_hook_state is not None:
+            result.update(summarize_bucket_layout(
                 [r['bucket_counts'] for r in gathered],
                 [r['bucket_bytes'] for r in gathered],
                 args.measured_iterations,

@@ -102,3 +102,20 @@ Socket 组同时改变 transport 与 channel，只解释为通信受限模式，
 PYTHONPATH=. .venv/bin/python c4/scripts/run_table_v_muon_strict_blocking.py \
   --matrix system --gpus 0,1,2,3,4,5,6,7
 ```
+
+## 正常异步 DDP bucket sweep
+
+CM244–CM247用于观察bucket大小和计算/通信overlap，而非继续使用严格阻塞。固定350M、
+8卡、FP32、每卡batch1、sequence256、GA1、关闭checkpointing、默认channel与SHM，
+分别设置`bucket_cap_mb=256/1024`，每档运行Dense与GreedyLoRE各一次。GreedyLoRE仍为
+rank32、EF14、压缩起点100和投影间隔200；预热101步，连续测量更新102–501共400步。
+
+独立timing包装器只在hook被调用时记录实际bucket字节布局，直接返回原hook Future，
+不执行额外CUDA同步或等待，因此保持正常异步DDP语义。主指标为完整训练步时间；异步
+hook可能彼此及与backward重叠，不能将各hook局部时间简单相加，本轮不报告严格阻塞
+hook时间。输出目录为`outputs/CM244-CM247-table-v-muon-bucket-sweep/`。
+
+```bash
+PYTHONPATH=. .venv/bin/python c4/scripts/run_table_v_muon_strict_blocking.py \
+  --matrix bucket --gpus 0,1,2,3,4,5,6,7
+```

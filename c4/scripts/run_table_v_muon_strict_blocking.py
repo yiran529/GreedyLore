@@ -18,6 +18,8 @@ BF16_PAPER_ARTIFACTS = ROOT / 'outputs/CM166-CM173-table-v-muon-strict-blocking-
 BF16_PAPER_START_NUMBER = 166
 SYSTEM_MATRIX_ARTIFACTS = ROOT / 'outputs/CM188-CM243-table-v-muon-strict-blocking-system-matrix'
 SYSTEM_MATRIX_START_NUMBER = 188
+BUCKET_SWEEP_ARTIFACTS = ROOT / 'outputs/CM244-CM247-table-v-muon-bucket-sweep'
+BUCKET_SWEEP_START_NUMBER = 244
 WARMUP_ITERATIONS = 101
 MEASURED_ITERATIONS = 400
 BUCKET_CAP_MB = 8192
@@ -47,6 +49,13 @@ SYSTEM_MATRIX_GROUPS = (
     ('ws8-bf16-socket', 8, 'bfloat16', 1, False, 'one', 'socket'),
 )
 SYSTEM_MATRIX_MODELS = MODELS
+BUCKET_SWEEP_GROUPS = (
+    ('ws8-fp32-bucket256', 8, 'float32', 1, False, 'default', 'shm'),
+    ('ws8-fp32-bucket1024', 8, 'float32', 1, False, 'default', 'shm'),
+)
+BUCKET_SWEEP_MODELS = (
+    ('350m', 'llama_350m.json', 60000, 6000, 128),
+)
 ARMS = (
     ('dense', 'none', 'm001'),
     ('greedylore', 'top_subspace', 'm002'),
@@ -73,7 +82,8 @@ def timestamp():
 
 def cells(
     groups=None, start_number=None, artifacts=None, models=None,
-    alternate_arms=False,
+    alternate_arms=False, bucket_cap_mb=BUCKET_CAP_MB,
+    strict_blocking=True, record_bucket_layout=False,
 ):
     groups = GROUPS if groups is None else groups
     number = START_NUMBER if start_number is None else start_number
@@ -151,11 +161,13 @@ def cells(
                     '--error_inherit',
                     '0',
                     '--ddp_bucket_cap_mb',
-                    str(BUCKET_CAP_MB),
-                    '--strict_blocking_communication',
-                    '--output_dir',
-                    str(artifacts / run_id),
+                    str(bucket_cap_mb),
                 ]
+                if strict_blocking:
+                    command.append('--strict_blocking_communication')
+                if record_bucket_layout:
+                    command.append('--record_bucket_layout')
+                command.extend(['--output_dir', str(artifacts / run_id)])
                 if checkpointing:
                     command.append('--activation_checkpointing')
                 yield {
@@ -168,7 +180,9 @@ def cells(
                     'activation_checkpointing': checkpointing,
                     'channels': channels,
                     'transport': transport,
-                    'bucket_cap_mb': BUCKET_CAP_MB,
+                    'bucket_cap_mb': bucket_cap_mb,
+                    'strict_blocking_communication': strict_blocking,
+                    'record_bucket_layout': record_bucket_layout,
                     'measured_iterations': MEASURED_ITERATIONS,
                     'model': model,
                     'arm': arm,
@@ -194,6 +208,21 @@ def system_matrix_cells():
         models=SYSTEM_MATRIX_MODELS,
         alternate_arms=True,
     )
+
+
+def bucket_sweep_cells():
+    number = BUCKET_SWEEP_START_NUMBER
+    for group, bucket_cap_mb in zip(BUCKET_SWEEP_GROUPS, (256, 1024)):
+        yield from cells(
+            groups=(group,),
+            start_number=number,
+            artifacts=BUCKET_SWEEP_ARTIFACTS,
+            models=BUCKET_SWEEP_MODELS,
+            bucket_cap_mb=bucket_cap_mb,
+            strict_blocking=False,
+            record_bucket_layout=True,
+        )
+        number += len(ARMS) * len(BUCKET_SWEEP_MODELS)
 
 
 def selected_gpus_are_idle(gpus):
@@ -269,6 +298,8 @@ def write_comparisons(rows):
                 continue
             dense_seconds = dense['mean_iteration_seconds']
             method_seconds = greedylore['mean_iteration_seconds']
+            dense_hook_seconds = dense.get('mean_blocking_hook_seconds')
+            method_hook_seconds = greedylore.get('mean_blocking_hook_seconds')
             comparisons.append({
                 'group': group,
                 'model': model,
@@ -278,11 +309,12 @@ def write_comparisons(rows):
                 'time_reduction_percent': (
                     (dense_seconds - method_seconds) / dense_seconds * 100
                 ),
-                'dense_blocking_hook_seconds': dense['mean_blocking_hook_seconds'],
-                'greedylore_blocking_hook_seconds': greedylore['mean_blocking_hook_seconds'],
+                'dense_blocking_hook_seconds': dense_hook_seconds,
+                'greedylore_blocking_hook_seconds': method_hook_seconds,
                 'blocking_hook_speedup': (
-                    dense['mean_blocking_hook_seconds']
-                    / greedylore['mean_blocking_hook_seconds']
+                    dense_hook_seconds / method_hook_seconds
+                    if dense_hook_seconds is not None and method_hook_seconds is not None
+                    else None
                 ),
             })
     (ARTIFACTS / 'comparisons.json').write_text(
@@ -294,12 +326,22 @@ def write_comparisons(rows):
         '| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |',
     ]
     for row in comparisons:
+        dense_hook = (
+            f"{row['dense_blocking_hook_seconds']:.6f}"
+            if row['dense_blocking_hook_seconds'] is not None else '—'
+        )
+        method_hook = (
+            f"{row['greedylore_blocking_hook_seconds']:.6f}"
+            if row['greedylore_blocking_hook_seconds'] is not None else '—'
+        )
+        hook_speedup = (
+            f"{row['blocking_hook_speedup']:.4f}x"
+            if row['blocking_hook_speedup'] is not None else '—'
+        )
         report.append(
             f"| {row['group']} | {row['model']} | {row['dense_seconds']:.6f} | "
             f"{row['greedylore_seconds']:.6f} | {row['speedup']:.4f}x | "
-            f"{row['dense_blocking_hook_seconds']:.6f} | "
-            f"{row['greedylore_blocking_hook_seconds']:.6f} | "
-            f"{row['blocking_hook_speedup']:.4f}x |"
+            f"{dense_hook} | {method_hook} | {hook_speedup} |"
         )
     (ARTIFACTS / 'results.md').write_text(
         '\n'.join(report) + '\n', encoding='utf-8'
@@ -312,7 +354,7 @@ def main():
     parser.add_argument('--dry-run', action='store_true')
     parser.add_argument('--gpus', default='0,1,2,3,4,5,6,7')
     parser.add_argument(
-        '--matrix', choices=['fp32', 'bf16-paper', 'system'], default='fp32'
+        '--matrix', choices=['fp32', 'bf16-paper', 'system', 'bucket'], default='fp32'
     )
     args = parser.parse_args()
     if args.matrix == 'bf16-paper':
@@ -324,6 +366,11 @@ def main():
         START_NUMBER = SYSTEM_MATRIX_START_NUMBER
         GROUPS = SYSTEM_MATRIX_GROUPS
         MODELS = SYSTEM_MATRIX_MODELS
+    elif args.matrix == 'bucket':
+        ARTIFACTS = BUCKET_SWEEP_ARTIFACTS
+        START_NUMBER = BUCKET_SWEEP_START_NUMBER
+        GROUPS = BUCKET_SWEEP_GROUPS
+        MODELS = BUCKET_SWEEP_MODELS
     all_gpus = args.gpus.split(',')
     if (
         len(all_gpus) != 8 or len(set(all_gpus)) != 8
@@ -331,7 +378,10 @@ def main():
     ):
         parser.error('--gpus must contain eight distinct GPU indices')
 
-    matrix = list(cells(alternate_arms=args.matrix == 'system'))
+    matrix = (
+        list(bucket_sweep_cells()) if args.matrix == 'bucket'
+        else list(cells(alternate_arms=args.matrix == 'system'))
+    )
     if args.dry_run:
         print(
             f'cells={len(matrix)} ids=CM{matrix[0]["number"]:03d}-'
@@ -406,8 +456,13 @@ def main():
             and result.get('measured_steps') == MEASURED_ITERATIONS
             and result.get('optimizer') == 'muon'
             and result.get('compressor') == cell['compressor']
-            and result.get('strict_blocking_communication') is True
-            and 'mean_blocking_hook_seconds' in result
+            and result.get('strict_blocking_communication')
+                is cell['strict_blocking_communication']
+            and (
+                'mean_blocking_hook_seconds' in result
+                if cell['strict_blocking_communication']
+                else result.get('bucket_layout_recorded') is True
+            )
         )
         row = {
             key: cell[key] for key in (
@@ -420,7 +475,7 @@ def main():
             status='completed' if accepted else 'failed',
             mean_iteration_seconds=result['mean_iteration_seconds'] if accepted else None,
             mean_blocking_hook_seconds=(
-                result['mean_blocking_hook_seconds'] if accepted else None
+                result.get('mean_blocking_hook_seconds') if accepted else None
             ),
             observed_bucket_counts=(
                 result['observed_bucket_counts'] if accepted else None
