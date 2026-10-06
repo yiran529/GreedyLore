@@ -164,3 +164,15 @@
 
 - 新增GreedyLoRE CM245/CM247，与配对Dense共同使用350M、8卡、FP32、batch1、默认channel/SHM；bucket cap分别为256/1024 MiB，rank32、EF14、压缩起点100和投影间隔200不变。
 - 不启用严格阻塞。被动包装器只记录每步实际bucket布局并返回原`top_subspace` Future，用端到端iteration time比较不同bucket下的正常overlap收益；每臂一次。
+
+## 2026-10-06：CM251 GreedyLoRE + Muon r32 350M 完成结果核对
+
+- 目的与配置：与 Dense CM250 比较相同模型、数据、Muon 和训练预算下 rank 32 梯度压缩的 validation 表现。CM251 从头训练 60,000 步，矩阵 LR 0.005 来自 CM248/CM249 的 10,000 步 Dense sweep；使用 `top_subspace`、EF14、压缩起点 1,000、投影间隔 200。已有 50 个 C4 train 分片被重复使用；完整设置见 `docs/table-iv-350m-muon-protocol.md` 和 run 的 `command.txt`。
+- 验证与结果：`outputs/CM251-m002-greedylore-muon-llama350m-c4-r32-formal-lr0p005-bf16-s1243/all_results.json` 记录 `update_step=60000`，final validation loss/PPL 为 2.91212630/18.39587206，best loss/PPL 为 2.91208630/18.39513630（第 59,000 步）；final 评估覆盖 10,048,075 个有效 token。同目录 `train.log` 有 `Script finished successfully`，队列 `outputs/CM248-CM252-table-iv-350m-muon-existing-data/status.tsv` 记为 `completed`。
+- 观察与下一步：相对 CM250，final validation loss 高 0.05716，PPL 高 1.02198（5.88%）；完整比较见 `docs/results.md`。两组均只有 seed 1243 一次训练，且 LR 选择和正式比较使用同一 validation；需固定配置并独立重复后再判断稳定性。
+
+## 2026-10-06：CM252 GreedyLoRE + Muon r256 350M 完成结果核对
+
+- 目的与配置：在 CM250/CM251 完成后，从头训练 rank 256，与相同模型、数据、Muon 配置和 60,000 步预算的 Dense CM250、r32 CM251 比较。CM252 使用由 CM248/CM249 选择的矩阵 LR 0.005、`top_subspace`、EF14、压缩起点 1,000、投影间隔 200；已有 50 个 C4 train 分片被重复使用。完整设置见 `docs/table-iv-350m-muon-protocol.md` 和 run 的 `command.txt`。
+- 验证与结果：`outputs/CM252-m002-greedylore-muon-llama350m-c4-r256-formal-lr0p005-bf16-s1243/all_results.json` 记录 `update_step=60000`，final validation loss/PPL 为 2.86140490/17.48607581，best loss/PPL 为 2.86136158/17.48531838（第 59,000 步）；final 评估覆盖 10,048,075 个有效 token。同目录 `train.log` 有 `Script finished successfully`，队列 `outputs/CM248-CM252-table-iv-350m-muon-existing-data/status.tsv` 记为 `completed`。
+- 观察与下一步：相对 CM250，final validation loss 高 0.00644，PPL 高 0.11218（0.65%）；CM252 的 final PPL 低于 CM251。三组均只有 seed 1243 一次训练，且 LR 选择和正式比较使用同一 validation；完整比较见 `docs/results.md`，需固定配置并独立重复后再判断稳定性。

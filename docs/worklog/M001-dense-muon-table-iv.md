@@ -162,3 +162,9 @@
 
 - 新增Dense CM244/CM246，固定350M、8卡、FP32、batch1、默认channel/SHM和其余Muon设置，仅将DDP bucket cap设为256/1024 MiB；不用严格阻塞，测量正常异步端到端时间。
 - timing入口的被动包装器只记录实际bucket布局并原样返回Dense all-reduce Future，不同步、不等待。预热101步、测量400步；完整协议见`docs/table-v-muon-strict-blocking.md`。
+
+## 2026-10-06：CM250 Dense Muon 350M 完成结果核对
+
+- 目的与配置：为同设置的 GreedyLoRE r32（CM251）提供 Dense 对照。先以 CM248/CM249 的第 10,000 步 final validation loss 3.23100794/3.21209903 选择矩阵 LR 0.005；CM250 从头训练 60,000 步。使用已有 50 个 C4 train 分片重复数据、8 个 validation 分片、4 张 RTX 4090、BF16、seed 1243、全局 batch 512、warmup 6,000、cosine 调度、Muon scalar LR 0.001；完整设置见 `docs/table-iv-350m-muon-protocol.md` 和 run 的 `command.txt`。
+- 验证与结果：`outputs/CM250-m001-dense-muon-llama350m-c4-dense-formal-lr0p005-bf16-s1243/all_results.json` 记录 `update_step=60000`，final validation loss/PPL 为 2.85496862/17.37389197，best PPL 同为 17.37389197（第 60,000 步）；final 评估覆盖 10,048,075 个有效 token。同目录 `train.log` 有 `Script finished successfully`，队列 `outputs/CM248-CM252-table-iv-350m-muon-existing-data/status.tsv` 记为 `completed`。
+- 观察与下一步：与 CM251 同口径比较见 `docs/results.md`。本轮只做一次 seed 1243 训练，且训练数据重复；固定配置的独立重复才可检验差异是否稳定。

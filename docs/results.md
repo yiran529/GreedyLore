@@ -1,4 +1,4 @@
-# GreedyLoRE + Muon 实验结果（2026-10-03 更新）
+# GreedyLoRE + Muon 实验结果（2026-10-06 更新）
 
 以下均为本仓库复现实验，**不是论文报告值**。每项只运行 seed 1243 一次，因此差异仅作初步观察。原始结果位于 `outputs/<完整 run ID>/all_results.json`，日志位于同目录的 `train.log`；完整 run ID 可由表中编号在 `outputs/` 下唯一定位。输出目录被 Git 忽略，本文保留可提交的结果摘要。
 
@@ -146,6 +146,37 @@ Socket，只作为通信受限诊断，不能将差异解释为纯channel效应�
 - 失败原因：输出根目录下对应`<run_id>.log`，11项均确认CUDA OOM。
 - 协议与设置：`docs/table-v-muon-strict-blocking.md`；控制器：
   `c4/scripts/run_table_v_muon_strict_blocking.py --matrix system`。
+
+## C4 / LLaMA 350M：Table IV Muon 适配（CM250–CM252）
+
+### 实验矩阵与核心设置
+
+| 实验 | 模型 / 方法 | 完成预算 | 矩阵 LR |
+| --- | --- | ---: | ---: |
+| CM250 | LLaMA 350M / Dense Muon | 60,000 更新步 | 0.005 |
+| CM251 | LLaMA 350M / GreedyLoRE + Muon r32 | 60,000 更新步 | 0.005 |
+| CM252 | LLaMA 350M / GreedyLoRE + Muon r256 | 60,000 更新步 | 0.005 |
+
+三组均使用本地 `c4/configs/llama_350m.json`、已有的 `c4/c4_en` C4 数据（50 个 train、8 个 validation 分片）、4 张 RTX 4090、BF16、activation checkpointing、序列长 256、每卡 batch 128、全局 batch 512、seed 1243。训练数据按固定顺序重复以达到 60,000 步；warmup 6,000 步，cosine 调度至峰值 LR 的 10%，weight decay 0，梯度裁剪 1.0。Muon momentum 0.95、spectral-norm scaling，scalar AdamW LR 0.001。CM251/CM252 使用 `top_subspace`、EF14、rank 32/256、压缩起点 1,000、投影间隔 200。运行入口为 `c4/run_llama_pretraining.py`，队列为 `c4/scripts/queue_table_iv_350m_muon.py`；CM250/CM251 从头并行训练，完成后 CM252 从头训练，均未保存 checkpoint。
+
+共同矩阵 LR 由先行的 Dense CM248（LR 0.01）和 CM249（LR 0.005）在第 10,000 步的 final validation loss 选择：分别为 3.23101 和 3.21210，故选择 0.005。三组正式训练使用同一 validation 数据评估，属于探索性适配，并非论文 AdamW 结果的数值复现。
+
+### 结果
+
+| 实验 | best validation PPL（步） | final validation loss | final validation PPL（第 60,000 步） |
+| --- | ---: | ---: | ---: |
+| CM250 | 17.37389（60,000） | 2.85497 | 17.37389 |
+| CM251 | 18.39514（59,000） | 2.91213 | 18.39587 |
+| CM252 | 17.48532（59,000） | 2.86140 | 17.48608 |
+
+best 是第 1 步、每 1,000 步及训练结束后的 validation 评估中 loss 最低的一次。CM251/CM252 在第 59,000 步达到 best，训练结束后的 final 评估略高；三组 final 评估均覆盖 10,048,075 个有效 token。`all_results.json` 的 `update_step` 均为 60,000，队列 `status.tsv` 均记为 `completed`，对应 `train.log` 均有 `Script finished successfully`。
+
+### 结论与来源
+
+- 同口径 final validation 下，CM251 比 CM250 的 loss 高 0.05716，PPL 高 1.02198（5.88%）。按各自 best 比较，CM251 的 PPL 高 1.02124；两个 best 所在步数不同。
+- 同口径 final validation 下，CM252 比 CM250 的 loss 高 0.00644，PPL 高 0.11218（0.65%）。按各自 best 比较，CM252 的 PPL 高 0.11143；CM252 的 best 在第 59,000 步，CM250 在第 60,000 步。CM252 的 final PPL 低于 CM251，但尚不能据此推断 rank 效应稳定。
+- 三组各只有 seed 1243 一次完整训练（n=1），LR 选择与正式比较复用 validation，不能据此推断稳定差异或统计等效。重复现有训练数据也使本轮数据曝光与论文协议不完全一致。
+- 数值与步数来自 `outputs/CM250-m001-dense-muon-llama350m-c4-dense-formal-lr0p005-bf16-s1243/all_results.json`、`outputs/CM251-m002-greedylore-muon-llama350m-c4-r32-formal-lr0p005-bf16-s1243/all_results.json` 和 `outputs/CM252-m002-greedylore-muon-llama350m-c4-r256-formal-lr0p005-bf16-s1243/all_results.json` 的 `best_eval_ppl`、`best_eval_step`、`final_eval_loss`、`final_eval_ppl`、`final_eval_tokens`、`update_step`；运行设置来自同目录的 `command.txt`、`protocol.json`，LR 选择和完成状态来自 `outputs/CM248-CM252-table-iv-350m-muon-existing-data/selection.json`、`status.tsv`，成功结束由各自 `train.log` 核对。
 
 ## C4 / LLaMA：Table IV 相关实验
 
