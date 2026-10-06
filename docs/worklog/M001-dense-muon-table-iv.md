@@ -162,6 +162,22 @@
 
 - 新增Dense CM244/CM246，固定350M、8卡、FP32、batch1、默认channel/SHM和其余Muon设置，仅将DDP bucket cap设为256/1024 MiB；不用严格阻塞，测量正常异步端到端时间。
 - timing入口的被动包装器只记录实际bucket布局并原样返回Dense all-reduce Future，不同步、不等待。预热101步、测量400步；完整协议见`docs/table-v-muon-strict-blocking.md`。
+- CM244/CM246均完成。256/1024 MiB cap实际形成5/2个bucket，Dense iteration time为0.301390/0.324152秒；小bucket使Dense比1024 MiB快约7.02%，与更多通信/计算overlap一致。
+
+
+## 2026-10-03：350M Table IV Muon LR筛选与正式比较
+
+- 用户明确：每项4卡；Dense LR0.01/0.005各10000步sweep并行，胜出LR用于从头60000步Dense/r32并行，之后4卡r256。Dense身份CM248/CM249/CM250；M002身份CM251/CM252。
+- 协议：`docs/table-iv-350m-muon-protocol.md`；队列`c4/scripts/queue_table_iv_350m_muon.py`。以Table VII为准：schedule60000、warmup6000、global batch512、每卡128、sequence256、cosine到10%、WD0、clip1。新增`--stop_after_steps`仅改变停止预算，scheduler horizon保持60000。
+- 数据独立准备96 train/8 validation固定revision分片，复用已有文件并补充；精确计数和SHA256校验后做三臂短smoke，再自动启动实验。不循环数据，不覆盖已有结果；Muon和通信实现未改。
+- 验证：11项相关单元/数据回归测试通过（多worker测试需沙箱外进程通信），dry-run和diff检查通过；实际正式训练和smoke结果尚未产生。
+- 主指标best validation PPL、副指标final PPL；sweep按10000步final loss选LR，失败阻止下一阶段，n=1探索性适配。队列目录`outputs/CM248-CM252-table-iv-350m-muon/`，日志`outputs/CM248-CM252-table-iv-350m-muon.queue.log`。
+
+- 首次启动的编号检查误将控制器自身日志当作CM248已存在，在数据/训练前退出。已缩小检查到实验身份前缀并补充回归测试；失败日志保留为`outputs/CM248-CM252-table-iv-350m-muon.start-failed.log`，不计作训练run。
+
+- 用户因流量不足明确禁止下载，已停止旧tmux队列。50个已有分片已校验；没有新增完整文件，残留一个201124976字节的部分下载。改为只用原`c4/c4_en`，离线模式，显式重复训练数据并丢弃尾部不足128的batch，保持60000步/global batch512。旧队列及日志保留；新控制目录`outputs/CM248-CM252-table-iv-350m-muon-existing-data/`。
+
+- Dense四卡batch128短验证完成（5次更新，测量2次）；下一臂启动前GPU利用率检查立即失败。随后核实8卡显存/利用率均0且没有计算进程，符合短验证结束后的利用率读数残留。修正为控制器最多等待60秒再检查，不停止其他任务；加入回归测试并通过11项单元检查。增加仅前置验证阶段的`--resume`，保留原manifest、状态及日志，跳过有成功结果的Dense smoke，恢复剩余r32/r256验证。正式sweep尚未启动。
 
 ## 2026-10-06：CM250 Dense Muon 350M 完成结果核对
 

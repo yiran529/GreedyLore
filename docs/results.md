@@ -135,6 +135,25 @@ Socket，只作为通信受限诊断，不能将差异解释为纯channel效应�
 - 严格阻塞和单bucket有意取消反向计算与通信的外部重叠，因此结果支持“串行通信路径”
   的比较，不能直接外推为正常异步DDP吞吐。每臂仅seed1243一次，属于探索性系统结果。
 
+### 正常异步 DDP bucket sweep（CM244–CM247）
+
+为检验bucket大小对正常计算/通信overlap的影响，固定350M、8卡、FP32、每卡batch1、
+默认channel/SHM和相同Muon/GreedyLoRE参数，只改变DDP bucket cap。该组不使用严格
+阻塞；被动包装器只记录bucket布局并直接返回原hook Future。主指标为完整训练步时间，
+不报告不可与严格阻塞口径等同的hook时间。
+
+| Bucket cap | 实际bucket数 | Dense ID | Dense iter (s) | GreedyLoRE ID | GL iter (s) | iter speedup | 耗时变化 |
+| ---: | ---: | --- | ---: | --- | ---: | ---: | ---: |
+| 256 MiB | 5 | CM244 | 0.301390 | CM245 | 0.314311 | 0.9589× | -4.29% |
+| 1024 MiB | 2 | CM246 | 0.324152 | CM247 | 0.315635 | 1.0270× | +2.63% |
+
+256 MiB组实际bucket字节数为269,705,216、275,820,544、274,440,192、
+268,808,192、383,102,976；1024 MiB组为1,076,191,232、395,685,888。Cap是软上限，
+参数张量不拆分，因此实际bucket可略超上限。从1024 MiB减至256 MiB时，Dense每步时间
+降低约7.02%，GreedyLoRE只降低约0.42%；小bucket主要帮助Dense把All-Reduce与剩余
+backward重叠，GreedyLoRE的压缩与更多小collective抵消了大部分收益。两档均只有一次
+运行；1024 MiB的1.0270×与先前同类异步结果约1.0327×接近，但2.63%仍是初步差异。
+
 ### 结果来源
 
 - 运行代码版本：`9212f42c9acd629f73be7d4902f77ed91d0ac537`。
@@ -146,6 +165,11 @@ Socket，只作为通信受限诊断，不能将差异解释为纯channel效应�
 - 失败原因：输出根目录下对应`<run_id>.log`，11项均确认CUDA OOM。
 - 协议与设置：`docs/table-v-muon-strict-blocking.md`；控制器：
   `c4/scripts/run_table_v_muon_strict_blocking.py --matrix system`。
+- Bucket sweep代码版本：`2d413db6f454d3cf64742f7a543b9e3622978ce5`；完成状态、
+  iteration指标和实际bucket布局来自
+  `outputs/CM244-CM247-table-v-muon-bucket-sweep/summary.json`及各run的
+  `all_results.json`。4项均核对`measured_steps=400`、
+  `strict_blocking_communication=false`、`bucket_layout_recorded=true`，队列状态为完成。
 
 ## C4 / LLaMA 350M：Table IV Muon 适配（CM250–CM252）
 

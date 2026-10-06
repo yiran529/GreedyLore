@@ -164,6 +164,20 @@
 
 - 新增GreedyLoRE CM245/CM247，与配对Dense共同使用350M、8卡、FP32、batch1、默认channel/SHM；bucket cap分别为256/1024 MiB，rank32、EF14、压缩起点100和投影间隔200不变。
 - 不启用严格阻塞。被动包装器只记录每步实际bucket布局并返回原`top_subspace` Future，用端到端iteration time比较不同bucket下的正常overlap收益；每臂一次。
+- CM245/CM247均完成，iteration time为0.314311/0.315635秒。配对Dense后，256 MiB下speedup为0.9589×（慢4.29%），1024 MiB下为1.0270×（快2.63%）；GreedyLoRE从1024降到256 MiB仅快约0.42%，未获得Dense同等的overlap收益。
+
+
+## 2026-10-03：350M Table IV r32/r256正式比较计划
+
+- 用户指定4卡Dense/r32并行60000步，之后4卡跑r256；共同matrix LR由先行Dense0.01/0.005、各10000步并行sweep决定，按端点validation loss选择，正式训练从头开始。M002身份CM251(r32)/CM252(r256)，配对Dense CM250。
+- 全部使用96 train/8 validation固定C4分片、hidden1024仓库模型、BF16、activation checkpointing、seed1243、global batch512、每卡128、GA1、60000 schedule、6000 warmup、EF14、start1000、projection gap200。压缩梯度后执行Muon，属于有损通信适配。
+- 详细合同、边界和失败规则见`docs/table-iv-350m-muon-protocol.md`；入口`c4/scripts/queue_table_iv_350m_muon.py`。数据准备和三臂smoke由队列先行；11项相关回归通过，正式结果待产生。不用并行吞吐估计方法加速，不将评估点当独立重复。
+
+- 首次启动的编号检查误将控制器自身日志当作CM248已存在，在数据/训练前退出。已缩小检查到实验身份前缀并补充回归测试；失败日志保留为`outputs/CM248-CM252-table-iv-350m-muon.start-failed.log`，不计作训练run。
+
+- 用户因流量不足明确禁止下载，已停止旧tmux队列。50个已有分片已校验；没有新增完整文件，残留一个201124976字节的部分下载。改为只用原`c4/c4_en`，离线模式，显式重复训练数据并丢弃尾部不足128的batch，保持60000步/global batch512。旧队列及日志保留；新控制目录`outputs/CM248-CM252-table-iv-350m-muon-existing-data/`。
+
+- Dense四卡batch128短验证完成（5次更新，测量2次）；下一臂启动前GPU利用率检查立即失败。随后核实8卡显存/利用率均0且没有计算进程，符合短验证结束后的利用率读数残留。修正为控制器最多等待60秒再检查，不停止其他任务；加入回归测试并通过11项单元检查。增加仅前置验证阶段的`--resume`，保留原manifest、状态及日志，跳过有成功结果的Dense smoke，恢复剩余r32/r256验证。正式sweep尚未启动。
 
 ## 2026-10-06：CM251 GreedyLoRE + Muon r32 350M 完成结果核对
 

@@ -47,6 +47,27 @@ def require_training_budget(update_step, target_steps):
         )
 
 
+def training_target_steps(scheduler_steps, stop_after_steps):
+    target = scheduler_steps if stop_after_steps is None else stop_after_steps
+    if not 0 < target <= scheduler_steps:
+        raise ValueError("stop_after_steps must be between 1 and num_training_steps")
+    return target
+
+
+def training_batches(dataloader, repeat=False, batch_size=None):
+    while True:
+        consumed = False
+        for batch in dataloader:
+            if batch_size is not None and batch['input_ids'].shape[0] != batch_size:
+                continue
+            consumed = True
+            yield batch
+        if not repeat:
+            return
+        if not consumed:
+            raise RuntimeError("Cannot repeat an empty training dataloader")
+
+
 def wandb_run_url(run):
     return run.url
 
@@ -68,6 +89,10 @@ def parse_args(args):
     parser.add_argument("--num_training_steps", type=int, default=10_000,
                         help="Number of **update steps** to train for. "
                              "Notice that gradient accumulation is taken into account.")
+    parser.add_argument("--stop_after_steps", type=int, default=None,
+                        help="Stop early while retaining the num_training_steps LR schedule.")
+    parser.add_argument("--repeat_training_data", action="store_true",
+                        help="Restart the existing dataloader when exhausted to finish the update budget.")
     parser.add_argument("--max_train_tokens", type=training_utils.max_train_tokens_to_number, default=None,
                         help="Number of tokens to train on. Overwrites num_training_steps. "
                              "You can use M and B suffixes, e.g. 100M or 1B.")
@@ -175,6 +200,7 @@ def warmup_linear(x, warmup=0.002):
     return 1.0 - x
 
 def main(args):
+    target_steps = training_target_steps(args.num_training_steps, args.stop_after_steps)
     torch.manual_seed(args.seed)
     np.random.seed(args.seed)
     random.seed(args.seed)
@@ -326,7 +352,7 @@ def main(args):
         wandb.save(os.path.abspath(__file__), policy="now") # save current script
         # fix tqdm visual length to 80 so that the progress bar
         # doesn't jump around when changing from external display to laptop
-        pbar = tqdm(total=args.num_training_steps - update_step, desc="Update steps", ncols=80)
+        pbar = tqdm(total=target_steps - update_step, desc="Update steps", ncols=80)
     
     if args.optimizer.lower() == "adamw":
         optimizer = torch.optim.AdamW(trainable_params, lr=args.lr, betas=(args.beta1,args.beta2), eps=args.eps, weight_decay=args.weight_decay)
@@ -393,10 +419,12 @@ def main(args):
 
     torch.cuda.reset_peak_memory_stats()
 
-    for batch_idx, batch in enumerate(dataloader):
+    batches = training_batches(dataloader, args.repeat_training_data,
+                               args.batch_size if args.repeat_training_data else None)
+    for batch_idx, batch in enumerate(batches):
 
-        if update_step >= args.num_training_steps:
-            logger.info(f"Reached max number of update steps ({args.num_training_steps}). Stopping training.")
+        if update_step >= target_steps:
+            logger.info(f"Reached max number of update steps ({target_steps}). Stopping training.")
             print(f"Rank {global_rank} stopping training.")
             break
 
@@ -524,7 +552,7 @@ def main(args):
     # ##############################
     # END of training loop
     # ##############################
-    require_training_budget(update_step, args.num_training_steps)
+    require_training_budget(update_step, target_steps)
     logger.info("Training finished")
     if global_rank == 0: pbar.close()
 
